@@ -89,6 +89,7 @@ export class StreamProgramCalculator {
   async getCurrentLineupItem(
     req: GetCurrentLineupItemRequest,
   ): Promise<Result<CurrentLineupItemResult>> {
+    const startTime = req.startTime;
     const channel = await this.channelDB.getChannel(req.channelId);
 
     if (isNil(channel)) {
@@ -102,13 +103,21 @@ export class StreamProgramCalculator {
 
     const lineup = await this.channelDB.loadLineup(channel.uuid);
 
+    // if (lineup.onDemandConfig) {
+    //   startTime = this.onDemandService.getLiveTimestampForConfig(
+    //     lineup.onDemandConfig,
+    //     channel.startTime,
+    //     startTime,
+    //   );
+    // }
+
     let lineupItem: Maybe<StreamLineupItem>;
     let channelContext: Channel = channel;
     const redirectChannels: string[] = [];
     const upperBounds: number[] = [];
 
     let currentProgram = await this.getCurrentProgramAndTimeElapsed(
-      req.startTime,
+      startTime,
       channel,
       lineup,
     );
@@ -120,21 +129,16 @@ export class StreamProgramCalculator {
       );
 
       if (redirectChannels.includes(currentProgram.program.channel)) {
-        await this.channelCache.recordPlayback(
-          channelContext.uuid,
-          req.startTime,
-          {
-            type: 'error',
-            title: 'Error',
-            error:
-              'Recursive channel redirect found: ' +
-              redirectChannels.join(', '),
-            duration: 60_000,
-            streamDuration: 60_000,
-            startOffset: 0,
-            programBeginMs: req.startTime,
-          },
-        );
+        await this.channelCache.recordPlayback(channelContext.uuid, startTime, {
+          type: 'error',
+          title: 'Error',
+          error:
+            'Recursive channel redirect found: ' + redirectChannels.join(', '),
+          duration: 60_000,
+          streamDuration: 60_000,
+          startOffset: 0,
+          programBeginMs: req.startTime,
+        });
       }
 
       const nextChannelId = currentProgram.program.channel;

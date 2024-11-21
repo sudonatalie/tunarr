@@ -305,7 +305,7 @@ export function TvGuide({ channelId, start, end }: Props) {
           ? compact([
               p.program.date ? dayjs(p.program.date).year() : null,
             ]).join(',')
-          : p.program?.title ?? '',
+          : (p.program?.title ?? ''),
       content: (p) =>
         p.subtype === 'movie'
           ? compact([p.date ? dayjs(p.date).year() : null]).join(',')
@@ -391,16 +391,17 @@ export function TvGuide({ channelId, start, end }: Props) {
           <Box sx={{ fontSize: '13px', fontStyle: 'italic' }}>
             {episodeTitle}
           </Box>
-          {((smallViewport && pct > 20) || (!smallViewport && pct > 8)) && (
-            <>
-              <Box sx={{ fontSize: '12px' }}>
-                {`${programStart.format('LT')} - ${programEnd.format('LT')}`}
-              </Box>
-              <Box sx={{ fontSize: '12px' }}>
-                {isPlaying ? ` (${remainingTime}m left)` : null}
-              </Box>
-            </>
-          )}
+          {((smallViewport && pct > 20) || (!smallViewport && pct > 8)) &&
+            !program.isPaused && (
+              <>
+                <Box sx={{ fontSize: '12px' }}>
+                  {`${programStart.format('LT')} - ${programEnd.format('LT')}`}
+                </Box>
+                <Box sx={{ fontSize: '12px' }}>
+                  {isPlaying ? ` (${remainingTime}m left)` : null}
+                </Box>
+              </>
+            )}
         </GuideItem>
         {endOfAvailableProgramming
           ? renderUnavailableProgramming(finalBlockWidth, index)
@@ -465,6 +466,7 @@ export function TvGuide({ channelId, start, end }: Props) {
         // TODO: We should use the configured guideFlexPlaceholder title
         // here if it is configured for this channel
         title: 'Flex',
+        isPaused: false,
       });
     }
     return (

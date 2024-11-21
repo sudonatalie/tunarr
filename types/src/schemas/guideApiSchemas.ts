@@ -12,6 +12,7 @@ import {
 const BaseGuideProgramSchema = z.object({
   start: z.number(),
   stop: z.number(),
+  isPaused: z.boolean().optional().default(false),
 });
 
 export const ContentGuideProgramSchema = ContentProgramSchema.merge(

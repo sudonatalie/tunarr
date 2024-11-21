@@ -69,11 +69,13 @@ export class UpdateXmlTvTask extends Task<void> {
 
       await this.guideService.buildAllChannels(
         dayjs.duration({ hours: xmltvSettings.programmingHours }),
+        false,
+        this.channelId,
       );
 
-      this.logger.info('XMLTV Updated at ' + new Date().toLocaleString());
+      this.logger.info('XMLTV Updated at %s', dayjs().format());
     } catch (err) {
-      this.logger.error('Unable to update TV guide', err);
+      this.logger.error(err, 'Unable to update TV guide');
       return;
     }
 
