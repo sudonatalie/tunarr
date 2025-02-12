@@ -22,14 +22,8 @@ export const DrawerOpenWidth = 240;
 
 export type DrawerTransitionState = 'opening' | 'open' | 'closing' | 'closed';
 
-type Props = {
-  onOpen?: () => void;
-  onClose?: () => void;
-};
-
-export const Drawer = ({ onOpen, onClose }: Props) => {
+export const Drawer = () => {
   const [drawerOpen, toggleDrawerOpen] = useToggle(false);
-  // const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerState, setDrawerState] =
     useState<DrawerTransitionState>('closed');
   const [sublistStates, setSublistStates] = useState<Record<string, boolean>>(
@@ -42,6 +36,8 @@ export const Drawer = ({ onOpen, onClose }: Props) => {
   const handleOpenClick = useCallback(
     (ev: React.MouseEvent, itemName: string) => {
       ev.preventDefault();
+      ev.stopPropagation();
+      console.log('here');
       setSublistStates((prev) => ({
         ...prev,
         [itemName]: prev[itemName] ? !prev[itemName] : true,
@@ -52,16 +48,6 @@ export const Drawer = ({ onOpen, onClose }: Props) => {
 
   const handleStateChange = (state: DrawerTransitionState) => {
     setDrawerState(state);
-    switch (state) {
-      case 'open':
-        onOpen?.();
-        break;
-      case 'closed':
-        onClose?.();
-        break;
-      default:
-        break;
-    }
   };
 
   return (
@@ -107,8 +93,8 @@ export const Drawer = ({ onOpen, onClose }: Props) => {
           }}
           variant="permanent"
           anchor="left"
-          onMouseEnter={() => toggleDrawerOpen()}
-          onMouseLeave={() => toggleDrawerOpen()}
+          onMouseEnter={() => toggleDrawerOpen(true)}
+          onMouseLeave={() => toggleDrawerOpen(false)}
         >
           <>
             <Toolbar

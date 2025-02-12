@@ -33,6 +33,9 @@ await Bun.build({
     identifiers: false,
     syntax: true,
   },
+  loader: {
+    '.sql': 'text',
+  },
   sourcemap: 'linked',
   external: [
     'mysql',

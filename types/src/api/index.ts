@@ -170,9 +170,9 @@ export const UpdateMediaSourceRequestSchema = z.discriminatedUnion('type', [
     sendChannelUpdates: true,
     sendGuideUpdates: true,
     clientIdentifier: true,
-  }),
-  JellyfinServerSettingsSchema,
-  EmbyServerSettingsSchema,
+  }).omit({ libraries: true }),
+  JellyfinServerSettingsSchema.omit({ libraries: true }),
+  EmbyServerSettingsSchema.omit({ libraries: true }),
 ]);
 
 export type UpdateMediaSourceRequest = z.infer<
@@ -196,9 +196,9 @@ export const InsertMediaSourceRequestSchema = z.discriminatedUnion('type', [
     sendGuideUpdates: true,
     index: true,
     clientIdentifier: true,
-  }).omit({ id: true }),
-  JellyfinServerSettingsSchema.omit({ id: true }),
-  EmbyServerSettingsSchema.omit({ id: true }),
+  }).omit({ id: true, libraries: true }),
+  JellyfinServerSettingsSchema.omit({ id: true, libraries: true }),
+  EmbyServerSettingsSchema.omit({ id: true, libraries: true }),
 ]);
 
 export type InsertMediaSourceRequest = z.infer<
@@ -329,4 +329,8 @@ export const JellyfinGetLibraryItemsQuerySchema = z.object({
   nameStartsWithOrGreater: z.string().min(1).optional(),
   nameStartsWith: z.string().min(1).optional(),
   nameLessThan: z.string().min(1).optional(),
+});
+
+export const UpdateMediaSourceLibraryRequest = z.object({
+  enabled: z.boolean(),
 });

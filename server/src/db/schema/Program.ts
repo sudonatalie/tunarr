@@ -12,7 +12,7 @@ import {
 import type { Insertable, Selectable, Updateable } from 'kysely';
 import type { MarkNotNilable } from '../../types/util.ts';
 import { type KyselifyBetter } from './KyselifyBetter.ts';
-import { MediaSource, MediaSourceTypes } from './MediaSource.ts';
+import { MediaSourceLibrary, MediaSourceTypes } from './MediaSource.ts';
 import { ProgramGrouping } from './ProgramGrouping.ts';
 
 export const ProgramTypes = ['movie', 'episode', 'track'] as const;
@@ -33,6 +33,7 @@ export const Program = sqliteTable(
     albumUuid: text().references(() => ProgramGrouping.uuid),
     artistName: text(),
     artistUuid: text().references(() => ProgramGrouping.uuid),
+    canonicalId: text(),
     duration: integer().notNull(),
     episode: integer(),
     episodeIcon: text(),
@@ -41,6 +42,7 @@ export const Program = sqliteTable(
     mediaSourceId: text().references(() => MediaSource.uuid, {
       onDelete: 'cascade',
     }),
+    libraryId: text().references(() => MediaSourceLibrary.uuid),
     filePath: text(),
     grandparentExternalKey: text(),
     icon: text(),
@@ -77,14 +79,16 @@ export const Program = sqliteTable(
       'program_source_type_check',
       inArray(table.sourceType, table.sourceType.enumValues).inlineParams(),
     ),
+    index('program_canonical_id_index').on(table.canonicalId),
   ],
 );
 
 export type ProgramTable = KyselifyBetter<typeof Program>;
 export type ProgramDao = Selectable<ProgramTable>;
+// Make canonicalId required on insert.
 export type NewProgramDao = MarkNotNilable<
   Insertable<ProgramTable>,
-  'mediaSourceId'
+  'canonicalId' | 'mediaSourceId'
 >;
 export type ProgramDaoUpdate = Updateable<ProgramTable>;
 

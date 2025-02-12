@@ -78,3 +78,16 @@ export function groupBy<T, Key extends string | number | symbol>(
 export function rotateArray<T>(arr: T[], positions: number): T[] {
   return arr.slice(positions, arr.length).concat(arr.slice(0, positions));
 }
+
+export function inTuple<Arr extends readonly string[], S extends string>(
+  arr: Arr,
+  typ: S,
+): boolean {
+  for (const value of arr) {
+    if (value === typ) {
+      return true;
+    }
+  }
+
+  return false;
+}

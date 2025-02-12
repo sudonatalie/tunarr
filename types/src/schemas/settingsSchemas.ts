@@ -149,17 +149,38 @@ export const FfmpegSettingsSchema = z.object({
   hlsDirectOutputFormat: z.enum(['mkv', 'mpegts', 'mp4']).default('mpegts'),
 });
 
-const mediaSourceId = z.custom<MediaSourceId>((val) => {
+export const mediaSourceId = z.custom<MediaSourceId>((val) => {
   return typeof val === 'string';
 });
 
 export type MediaSourceId = Tag<string, 'mediaSourceId'>;
+
+const BaseMediaSourceLibrarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  mediaType: z.enum([
+    'movies',
+    'shows',
+    'tracks',
+    'other_videos',
+    'music_videos',
+  ]),
+  lastScannedAt: z.number().optional(),
+  externalKey: z.string(),
+  // TODO: use common enum
+  type: z.enum(['plex', 'jellyfin', 'emby']),
+  enabled: z.boolean(),
+  isLocked: z.boolean(),
+});
+
+export const MediaSourceLibrarySchema = BaseMediaSourceLibrarySchema;
 
 const BaseMediaSourceSettingsSchema = z.object({
   id: mediaSourceId,
   name: z.string(),
   uri: z.string(),
   accessToken: z.string(),
+  libraries: z.array(BaseMediaSourceLibrarySchema),
 });
 
 export const PlexServerSettingsSchema = BaseMediaSourceSettingsSchema.extend({

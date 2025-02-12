@@ -1,0 +1,174 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { MediaSourceLibrary, MediaSourceSettings } from '@tunarr/types';
+import type { MediaSourceId } from '@tunarr/types/schemas';
+import { useCallback } from 'react';
+import { queryClient } from '../../queryClient.ts';
+import type { Maybe } from '../../types/util.ts';
+import { MediaSourcesQueryKey } from '../settingsHooks.ts';
+import { useTunarrApi } from '../useTunarrApi.ts';
+import { MediaSourceLibrariesQueryKey } from './useMediaSourceLibraries.ts';
+
+type EnableMutationArgs = {
+  mediaSourceId: MediaSourceId;
+  libraryId: string;
+  enabled: boolean;
+};
+
+type RefreshMutationArgs = {
+  mediaSourceId: MediaSourceId;
+  libraryId: string;
+};
+
+const useUpdateQueryCachedLibraries = () => {
+  const queryClient = useQueryClient();
+  const onMutate = useCallback(
+    async (
+      mediaSourceId: MediaSourceId,
+      libraryId: string,
+      mutateLibrary: (lib: MediaSourceLibrary) => MediaSourceLibrary,
+    ) => {
+      const librariesQueryKey = MediaSourceLibrariesQueryKey(mediaSourceId);
+      await queryClient.cancelQueries({ queryKey: librariesQueryKey });
+      await queryClient.cancelQueries({ queryKey: MediaSourcesQueryKey });
+
+      const prevLibraries = queryClient.getQueryData(librariesQueryKey);
+      queryClient.setQueryData(librariesQueryKey, (prev) => {
+        return prev?.map((library) => {
+          if (library.id === libraryId) {
+            return mutateLibrary(library);
+          }
+          return library;
+        });
+      });
+
+      const prevMediaSources = queryClient.getQueryData(MediaSourcesQueryKey);
+      queryClient.setQueryData(MediaSourcesQueryKey, (prev) => {
+        return prev?.map((source) => {
+          if (source.id !== mediaSourceId) {
+            return source;
+          }
+          return {
+            ...source,
+            libraries: source.libraries.map((lib) => {
+              if (lib.id !== libraryId) {
+                return lib;
+              }
+              return mutateLibrary(lib);
+            }),
+          };
+        });
+      });
+
+      return { prevLibraries, prevMediaSources };
+    },
+    [queryClient],
+  );
+
+  const onError = useCallback(
+    (
+      mediaSourceId: MediaSourceId,
+      prevLibraries: Maybe<MediaSourceLibrary[]>,
+      prevMediaSources: Maybe<MediaSourceSettings[]>,
+    ) => {
+      queryClient.setQueryData(
+        MediaSourceLibrariesQueryKey(mediaSourceId),
+        prevLibraries,
+      );
+      queryClient.setQueryData(MediaSourcesQueryKey, prevMediaSources);
+    },
+    [queryClient],
+  );
+
+  return {
+    onMutate,
+    onError,
+  };
+};
+
+export const useUpdateLibraryMutation = () => {
+  const apiClient = useTunarrApi();
+  const updateQueryCachedLibraries = useUpdateQueryCachedLibraries();
+
+  return useMutation({
+    mutationFn: (args: EnableMutationArgs) => {
+      return apiClient.updateMediaLibrary(
+        { enabled: args.enabled },
+        {
+          params: {
+            libraryId: args.libraryId,
+            mediaSourceId: args.mediaSourceId,
+          },
+        },
+      );
+    },
+    onMutate: async (args: EnableMutationArgs) => {
+      return updateQueryCachedLibraries.onMutate(
+        args.mediaSourceId,
+        args.libraryId,
+        (lib) => ({
+          ...lib,
+          enabled: args.enabled,
+        }),
+      );
+    },
+    onError: (err, args, context) => {
+      console.error(err);
+      updateQueryCachedLibraries.onError(
+        args.mediaSourceId,
+        context?.prevLibraries,
+        context?.prevMediaSources,
+      );
+    },
+    onSettled: (_data, _err, args) =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: MediaSourceLibrariesQueryKey(args.mediaSourceId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: MediaSourcesQueryKey,
+        }),
+      ]),
+  });
+};
+
+export const useRefreshLibraryMutation = () => {
+  const apiClient = useTunarrApi();
+  const updateQueryCachedLibraries = useUpdateQueryCachedLibraries();
+
+  return useMutation({
+    mutationFn: (args: RefreshMutationArgs) =>
+      apiClient.refreshMediaLibrary(undefined, {
+        params: {
+          libraryId: args.libraryId,
+          mediaSourceId: args.mediaSourceId,
+        },
+      }),
+    onMutate: async (args: RefreshMutationArgs) => {
+      return updateQueryCachedLibraries.onMutate(
+        args.mediaSourceId,
+        args.libraryId,
+        (lib) => ({
+          ...lib,
+          isLocked: true,
+        }),
+      );
+    },
+    onError: (err, args, context) => {
+      console.error(err);
+      updateQueryCachedLibraries.onError(
+        args.mediaSourceId,
+        context?.prevLibraries,
+        context?.prevMediaSources,
+      );
+    },
+    onSettled: (_data, _err, args) =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: MediaSourceLibrariesQueryKey(args.mediaSourceId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: MediaSourcesQueryKey,
+        }),
+      ]),
+  });
+};

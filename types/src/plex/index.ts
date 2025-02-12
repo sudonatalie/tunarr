@@ -1,5 +1,5 @@
 import z from 'zod';
-import { FindChild } from '../util.js';
+import { type FindChild } from '../util.js';
 
 export * from './dvr.js';
 
@@ -16,6 +16,24 @@ export const PlexJoinItemSchema = z.object({
 });
 
 export type PlexJoinItem = z.infer<typeof PlexJoinItemSchema>;
+
+export const PlexMediaContainerMetadataSchema = z.object({
+  size: z.number(),
+  totalSize: z.number().optional(),
+  librarySectionID: z.number().optional(),
+  librarySectionTitle: z.string().optional(),
+});
+
+export type PlexMediaContainerMetadata = z.infer<
+  typeof PlexMediaContainerMetadataSchema
+>;
+
+export type PlexMediaContainer<
+  MetadataType,
+  MetadataKey extends string = 'Metadata',
+> = PlexMediaContainerMetadata & {
+  [K in MetadataKey]?: MetadataType[];
+};
 
 export const PlexMediaTypeSchema = z.union([
   z.literal('movie'),
@@ -92,7 +110,16 @@ export const PlexLibraryCollectionSchema = z
 
 export type PlexLibraryCollection = z.infer<typeof PlexLibraryCollectionSchema>;
 
-const basePlexCollectionSchema = z.object({
+export const PlexContainerStatsSchema = z.object({
+  MediaContainer: z.object({
+    totalSize: z.number().optional(),
+    size: z.number(),
+  }),
+});
+
+export type PlexContainerStats = z.infer<typeof PlexContainerStatsSchema>;
+
+const basePlexCollectionSchema = PlexContainerStatsSchema.extend({
   allowSync: z.boolean(),
   art: z.string(),
   identifier: z.string(),
@@ -102,8 +129,6 @@ const basePlexCollectionSchema = z.object({
   mediaTagPrefix: z.string(),
   mediaTagVersion: z.number(),
   nocache: z.boolean().optional(),
-  size: z.number(),
-  totalSize: z.number().optional(), // Present when paging
   offset: z.number().optional(),
   thumb: z.string(),
   title1: z.string(),
@@ -112,9 +137,11 @@ const basePlexCollectionSchema = z.object({
   viewMode: z.number(),
 });
 
-const basePlexLibrarySchema = basePlexCollectionSchema.extend({
+export const PlexLibraryMetadataSchema = basePlexCollectionSchema.extend({
   type: PlexMediaTypeSchema,
 });
+
+export type PlexLibraryMetadata = z.infer<typeof PlexLibraryMetadataSchema>;
 
 const basePlexChildCollectionSchema = basePlexCollectionSchema.extend({
   parentIndex: z.number().optional(),
@@ -134,7 +161,7 @@ const basePlexGrandchildCollectionSchema = basePlexChildCollectionSchema.extend(
 const makePlexLibraryCollectionsSchema = <T extends z.AnyZodObject>(
   metadata: T,
 ) => {
-  return basePlexLibrarySchema.extend({
+  return PlexLibraryMetadataSchema.extend({
     Metadata: z.array(metadata).default([]), // There might be no collections
   });
 };
@@ -335,20 +362,20 @@ export const PlexTvShowSchema = BasePlexMediaSchema.extend({
   audienceRatingImage: z.string().optional(),
   childCount: z.number(),
   Collection: z.array(PlexJoinItemSchema).optional(),
-  contentRating: z.string(),
+  contentRating: z.string().optional(),
   Country: z.array(PlexJoinItemSchema).optional(),
   duration: z.number().optional(),
-  Genre: z.array(PlexJoinItemSchema),
+  Genre: z.array(PlexJoinItemSchema).optional(),
   index: z.number(),
   leafCount: z.number(),
-  originallyAvailableAt: z.string(),
+  originallyAvailableAt: z.string().optional(),
   primaryExtraKey: z.string().optional(),
-  Role: z.array(PlexJoinItemSchema),
+  Role: z.array(PlexJoinItemSchema).optional(),
   studio: z.string().optional(),
-  summary: z.string(),
+  summary: z.string().optional(),
   tagline: z.string().optional(),
   theme: z.string().optional(),
-  thumb: z.string(),
+  thumb: z.string().optional(),
   title: z.string(),
   type: z.literal('show'),
   updatedAt: z.number().optional(),
@@ -370,8 +397,8 @@ export const PlexTvSeasonSchema = BasePlexMediaSchema.extend({
   index: z.number(),
   parentIndex: z.number().optional(),
   parentYear: z.number().optional(),
-  thumb: z.string(),
-  art: z.string(),
+  thumb: z.string().optional(),
+  art: z.string().optional(),
   parentThumb: z.string().optional(),
   parentTheme: z.string().optional(),
   leafCount: z.number(),
@@ -462,7 +489,7 @@ export type PlexMusicTrack = Alias<z.infer<typeof PlexMusicTrackSchema>>;
 
 // /library/section/{id}/all for a Movie Library
 
-export const PlexLibraryMoviesSchema = basePlexLibrarySchema.extend({
+export const PlexLibraryMoviesSchema = PlexLibraryMetadataSchema.extend({
   Metadata: z.array(PlexMovieSchema),
 });
 
@@ -560,7 +587,7 @@ export const PlexEpisodeViewSchema = basePlexGrandchildCollectionSchema.extend({
   Metadata: z.array(PlexEpisodeSchema),
 });
 
-export type PlexEpisodeView = Alias<z.infer<typeof PlexEpisodeViewSchema>>;
+export type PlexEpisodeView = z.infer<typeof PlexEpisodeViewSchema>;
 
 // /library/metadata/{id}/children where ID is a music Artist
 
@@ -926,16 +953,35 @@ export const PlexTagResultSchema = z.object({
 
 export type PlexTagResult = z.infer<typeof PlexTagResultSchema>;
 
-export const PlexMediaContainerResponseSchema = z.object({
-  MediaContainer: z.object({
-    size: z.number(),
-    // These are only defined if we are querying a library directly
-    // and will be omitted if hitting /library/all
-    librarySectionID: z.number().optional(),
-    librarySectionTitle: z.string().optional(),
-    Metadata: z.array(PlexMediaSchema),
-  }),
-});
+export type PlexMediaContainerResponse<T extends PlexMediaContainerMetadata> = {
+  MediaContainer: T;
+};
+
+export type PlexMetadataResponse<EntityType> = PlexMediaContainerResponse<
+  PlexMediaContainerMetadata & { Metadata?: EntityType[] }
+>;
+
+export function MakePlexMediaContainerResponseSchema<T extends z.ZodTypeAny>(
+  schema: T,
+): z.ZodType<PlexMetadataResponse<z.infer<T>>> {
+  return z.object({
+    MediaContainer: z.object({
+      size: z.number(),
+      totalSize: z.number().optional(),
+      // These are only defined if we are querying a library directly
+      // and will be omitted if hitting /library/all
+      librarySectionID: z.number().optional(),
+      librarySectionTitle: z.string().optional(),
+      Metadata: z.array(schema).optional(),
+    }),
+  });
+}
+
+export const PlexMediaContainerResponseSchema =
+  MakePlexMediaContainerResponseSchema(PlexMediaSchema);
+
+export const PlexMovieMediaContainerResponseSchema =
+  MakePlexMediaContainerResponseSchema(PlexMovieSchema);
 
 export const PlexGenericMediaContainerResponseSchema = z.object({
   MediaContainer: z.record(z.any()),

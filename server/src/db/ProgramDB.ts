@@ -1,4 +1,8 @@
-import type { IProgramDB } from '@/db/interfaces/IProgramDB.js';
+import type {
+  GetOrInsertResult,
+  IProgramDB,
+  ProgramGroupingExternalIdLookup,
+} from '@/db/interfaces/IProgramDB.js';
 import { GlobalScheduler } from '@/services/Scheduler.js';
 import { ReconcileProgramDurationsTask } from '@/tasks/ReconcileProgramDurationsTask.js';
 import { AnonymousTask } from '@/tasks/Task.js';
@@ -26,6 +30,7 @@ import {
 import dayjs from 'dayjs';
 import { inject, injectable } from 'inversify';
 import { CaseWhenBuilder, NotNull, UpdateResult } from 'kysely';
+import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/sqlite';
 import {
   chunk,
   concat,
@@ -33,6 +38,7 @@ import {
   filter,
   first,
   flatMap,
+  flatten,
   forEach,
   groupBy,
   head,
@@ -42,6 +48,7 @@ import {
   keys,
   map,
   mapValues,
+  omit,
   partition,
   reduce,
   reject,
@@ -51,15 +58,18 @@ import {
   uniqBy,
   values,
 } from 'lodash-es';
-import { MarkOptional, MarkRequired } from 'ts-essentials';
+import { Dictionary, MarkOptional, MarkRequired } from 'ts-essentials';
 import { v4 } from 'uuid';
 import { typedProperty } from '../types/path.ts';
 import { getNumericEnvVar, TUNARR_ENV_VARS } from '../util/env.ts';
 import {
   flatMapAsyncSeq,
+  groupByFunc,
   groupByUniq,
   groupByUniqProp,
+  isDefined,
   isNonEmptyString,
+  mapAsyncSeq,
   mapToObj,
   run,
 } from '../util/index.ts';
@@ -74,6 +84,7 @@ import {
 } from './custom_types/ProgramSourceType.ts';
 import { upsertProgramExternalIds } from './programExternalIdHelpers.ts';
 import {
+  AllProgramFields,
   AllProgramJoins,
   ProgramUpsertFields,
   selectProgramsBuilder,
@@ -85,6 +96,7 @@ import {
   withTvSeason,
   withTvShow,
 } from './programQueryHelpers.ts';
+import { MediaSourceType } from './schema/MediaSource.ts';
 import {
   NewProgramDao,
   ProgramDao,
@@ -98,18 +110,25 @@ import {
   NewSingleOrMultiExternalId,
   ProgramExternalId,
   ProgramExternalIdKeys,
+  toInsertableProgramExternalId,
 } from './schema/ProgramExternalId.ts';
 import {
+  AllProgramGroupingFields,
   NewProgramGrouping,
   ProgramGroupingType,
 } from './schema/ProgramGrouping.ts';
 import {
   NewProgramGroupingExternalId,
+  ProgramGroupingExternalId,
+  ProgramGroupingExternalIdFieldsWithAlias,
   toInsertableProgramGroupingExternalId,
 } from './schema/ProgramGroupingExternalId.ts';
 import { DB } from './schema/db.ts';
 import type {
+  NewProgramGroupingWithExternalIds,
+  NewProgramWithExternalIds,
   ProgramGroupingWithExternalIds,
+  ProgramWithExternalIds,
   ProgramWithRelations,
 } from './schema/derivedTypes.ts';
 
@@ -228,6 +247,29 @@ export class ProgramDB implements IProgramDB {
       .select(withProgramGroupingExternalIds)
       .where('uuid', '=', id)
       .executeTakeFirst();
+  }
+
+  async getProgramGroupingByExternalId(eid: ProgramGroupingExternalIdLookup) {
+    return await getDatabase()
+      .selectFrom('programGroupingExternalId')
+      .where('externalKey', '=', eid.externalKey)
+      .where('externalSourceId', '=', eid.externalSourceId)
+      .where('sourceType', '=', eid.sourceType)
+      .select((eb) =>
+        jsonObjectFrom(
+          eb
+            .selectFrom('programGrouping')
+            .select(AllProgramGroupingFields)
+            .whereRef(
+              'programGrouping.uuid',
+              '=',
+              'programGroupingExternalId.groupUuid',
+            )
+            .select(withProgramGroupingExternalIds),
+        ).as('grouping'),
+      )
+      .executeTakeFirst()
+      .then((result) => result?.grouping ?? undefined);
   }
 
   async getProgramParent(
@@ -681,6 +723,322 @@ export class ProgramDB implements IProgramDB {
     );
 
     return upsertedPrograms;
+  }
+
+  async upsertPrograms(
+    programs: NewProgramWithExternalIds[],
+    programUpsertBatchSize: number = 100,
+  ) {
+    if (isEmpty(programs)) {
+      return [];
+    }
+
+    const db = getDatabase();
+
+    const externalIdsByProgramCanonicalId = groupByFunc(
+      programs,
+      (program) => program.canonicalId ?? programExternalIdString(program),
+      (program) => program.externalIds,
+    );
+
+    return await Promise.all(
+      chunk(programs, programUpsertBatchSize).map(async (c) => {
+        const chunkResult = await db.transaction().execute((tx) =>
+          tx
+            .insertInto('program')
+            .values(c.map((program) => omit(program, 'externalIds')))
+            .onConflict((oc) =>
+              oc
+                .columns(['sourceType', 'externalSourceId', 'externalKey'])
+                .doUpdateSet((eb) =>
+                  mapToObj(ProgramUpsertFields, (f) => ({
+                    [f.replace('excluded.', '')]: eb.ref(f),
+                  })),
+                ),
+            )
+            .returningAll()
+            .execute(),
+        );
+
+        const allExternalIds = flatten(c.map((program) => program.externalIds));
+        for (const program of chunkResult) {
+          const key = program.canonicalId ?? programExternalIdString(program);
+          const eids = externalIdsByProgramCanonicalId[key] ?? [];
+          for (const eid of eids) {
+            eid.programUuid = program.uuid;
+          }
+        }
+
+        const externalIdsByProgramId =
+          await this.upsertRawProgramExternalIds(allExternalIds);
+
+        return chunkResult.map(
+          (upsertedProgram) =>
+            ({
+              ...upsertedProgram,
+              externalIds: externalIdsByProgramId[upsertedProgram.uuid] ?? [],
+            }) satisfies ProgramWithExternalIds,
+        );
+      }),
+    ).then(flatten);
+  }
+
+  async upsertRawProgramExternalIds(
+    externalIds: NewSingleOrMultiExternalId[],
+    chunkSize: number = 100,
+  ): Promise<Dictionary<ProgramExternalId[]>> {
+    if (isEmpty(externalIds)) {
+      return {};
+    }
+
+    const logger = this.logger;
+
+    const [singles, multiples] = partition(
+      externalIds,
+      (id) => id.type === 'single',
+    );
+
+    let singleIdPromise: Promise<ProgramExternalId[]>;
+    if (!isEmpty(singles)) {
+      singleIdPromise = mapAsyncSeq(
+        chunk(singles, chunkSize),
+        (singleChunk) => {
+          return getDatabase()
+            .transaction()
+            .execute((tx) =>
+              tx
+                .insertInto('programExternalId')
+                .values(singleChunk.map(toInsertableProgramExternalId))
+                .onConflict((oc) =>
+                  oc
+                    .columns(['programUuid', 'sourceType'])
+                    .where('externalSourceId', 'is', null)
+                    .doUpdateSet((eb) => ({
+                      updatedAt: eb.ref('excluded.updatedAt'),
+                      externalFilePath: eb.ref('excluded.externalFilePath'),
+                      directFilePath: eb.ref('excluded.directFilePath'),
+                      programUuid: eb.ref('excluded.programUuid'),
+                    })),
+                )
+                .onConflict((oc) =>
+                  oc
+                    .columns(['programUuid', 'sourceType'])
+                    .where('mediaSourceId', 'is', null)
+                    .doUpdateSet((eb) => ({
+                      updatedAt: eb.ref('excluded.updatedAt'),
+                      externalFilePath: eb.ref('excluded.externalFilePath'),
+                      directFilePath: eb.ref('excluded.directFilePath'),
+                      programUuid: eb.ref('excluded.programUuid'),
+                    })),
+                )
+                .returningAll()
+                .execute(),
+            );
+        },
+      ).then(flatten);
+    } else {
+      singleIdPromise = Promise.resolve([]);
+    }
+
+    let multiIdPromise: Promise<ProgramExternalId[]>;
+    if (!isEmpty(multiples)) {
+      multiIdPromise = mapAsyncSeq(
+        chunk(multiples, chunkSize),
+        (multiChunk) => {
+          return getDatabase()
+            .transaction()
+            .execute((tx) =>
+              tx
+                .insertInto('programExternalId')
+                .values(multiChunk.map(toInsertableProgramExternalId))
+                .onConflict((oc) =>
+                  oc
+                    .columns(['programUuid', 'sourceType', 'externalSourceId'])
+                    .where('externalSourceId', 'is not', null)
+                    .doUpdateSet((eb) => ({
+                      updatedAt: eb.ref('excluded.updatedAt'),
+                      externalFilePath: eb.ref('excluded.externalFilePath'),
+                      directFilePath: eb.ref('excluded.directFilePath'),
+                      programUuid: eb.ref('excluded.programUuid'),
+                    })),
+                )
+                .onConflict((oc) =>
+                  oc
+                    .columns(['programUuid', 'sourceType', 'mediaSourceId'])
+                    .where('mediaSourceId', 'is not', null)
+                    .doUpdateSet((eb) => ({
+                      updatedAt: eb.ref('excluded.updatedAt'),
+                      externalFilePath: eb.ref('excluded.externalFilePath'),
+                      directFilePath: eb.ref('excluded.directFilePath'),
+                      programUuid: eb.ref('excluded.programUuid'),
+                    })),
+                )
+                .returningAll()
+                .execute(),
+            );
+        },
+      ).then(flatten);
+    } else {
+      multiIdPromise = Promise.resolve([]);
+    }
+
+    const [singleResult, multiResult] = await Promise.allSettled([
+      singleIdPromise,
+      multiIdPromise,
+    ]);
+
+    const allExternalIds: ProgramExternalId[] = [];
+    if (singleResult.status === 'rejected') {
+      logger.error(singleResult.reason, 'Error saving external IDs');
+    } else {
+      logger.trace('Upserted %d external IDs', singleResult.value.length);
+      allExternalIds.push(...singleResult.value);
+    }
+
+    if (multiResult.status === 'rejected') {
+      logger.error(multiResult.reason, 'Error saving external IDs');
+    } else {
+      logger.trace('Upserted %d external IDs', multiResult.value.length);
+      allExternalIds.push(...multiResult.value);
+    }
+
+    return groupBy(allExternalIds, (eid) => eid.programUuid);
+  }
+
+  async getProgramsForMediaSource(mediaSourceId: string, type?: ProgramType) {
+    return getDatabase()
+      .selectFrom('mediaSource')
+      .where('mediaSource.uuid', '=', mediaSourceId)
+      .select((eb) =>
+        jsonArrayFrom(
+          eb
+            .selectFrom('program')
+            .select(AllProgramFields)
+            .$if(isDefined(type), (eb) => eb.where('program.type', '=', type!))
+            .whereRef('mediaSource.name', '=', 'program.externalSourceId'),
+        ).as('programs'),
+      )
+      .executeTakeFirst()
+      .then((dbResult) => dbResult?.programs ?? []);
+  }
+
+  async getMediaSourceLibraryPrograms(libraryId: string) {
+    return selectProgramsBuilder({ includeGroupingExternalIds: true })
+      .where('libraryId', '=', libraryId)
+      .selectAll()
+      .select(withProgramExternalIds)
+      .execute();
+  }
+
+  async getProgramCanonicalIdsForMediaSource(
+    mediaSourceLibraryId: string,
+    type: ProgramType,
+    parentId?: string,
+  ) {
+    return getDatabase()
+      .selectFrom('program')
+      .where('program.libraryId', '=', mediaSourceLibraryId)
+      .where('program.type', '=', type)
+      .where('program.canonicalId', 'is not', null)
+      .select([
+        'program.uuid',
+        'program.externalKey',
+        'program.canonicalId',
+        'program.libraryId',
+      ])
+      .$narrowType<{ canonicalId: string; libraryId: string }>()
+      .execute()
+      .then((result) => groupByUniq(result, (p) => p.externalKey));
+  }
+
+  async getProgramGroupingCanonicalIds(
+    mediaSourceLibraryId: string,
+    type: ProgramGroupingType,
+    sourceType: MediaSourceType,
+  ) {
+    return getDatabase()
+      .selectFrom('programGrouping')
+      .where('programGrouping.libraryId', '=', mediaSourceLibraryId)
+      .where('programGrouping.type', '=', type)
+      .where('programGrouping.canonicalId', 'is not', null)
+      .select((eb) =>
+        jsonArrayFrom(
+          eb
+            .selectFrom('programGroupingExternalId as eid')
+            .where('eid.sourceType', '=', sourceType)
+            .whereRef('eid.groupUuid', '=', 'programGrouping.uuid')
+            .select(
+              ProgramGroupingExternalIdFieldsWithAlias(
+                ['externalKey', 'externalSourceId', 'sourceType'],
+                'eid',
+              ),
+            ),
+        ).as('externalIds'),
+      )
+      .select([
+        'programGrouping.uuid',
+        'programGrouping.canonicalId',
+        'programGrouping.libraryId',
+      ])
+      .$narrowType<{ canonicalId: string; libraryId: string }>()
+      .execute()
+      .then((result) =>
+        groupByUniq(result, (p) => head(p.externalIds)?.externalKey ?? ''),
+      );
+  }
+
+  async getShowSeasons(showUuid: string) {
+    return getDatabase()
+      .selectFrom('programGrouping')
+      .where('programGrouping.showUuid', '=', showUuid)
+      .where('programGrouping.type', '=', ProgramGroupingType.Season)
+      .selectAll()
+      .select(withProgramGroupingExternalIds)
+      .execute();
+  }
+
+  async getOrInsertProgramGrouping(
+    dao: NewProgramGroupingWithExternalIds,
+    externalId: ProgramGroupingExternalIdLookup,
+  ): Promise<GetOrInsertResult<ProgramGroupingWithExternalIds>> {
+    const existing = await this.getProgramGroupingByExternalId(externalId);
+    if (existing) {
+      return {
+        entity: existing,
+        wasInserted: false,
+        wasUpdated: false,
+      };
+    }
+
+    // TODO update external ids?
+
+    return await getDatabase()
+      .transaction()
+      .execute(async (tx) => {
+        const grouping = await tx
+          .insertInto('programGrouping')
+          .values(omit(dao, 'externalIds'))
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        const externalIds: ProgramGroupingExternalId[] = [];
+        if (dao.externalIds.length > 0) {
+          externalIds.push(
+            ...(await tx
+              .insertInto('programGroupingExternalId')
+              .values(dao.externalIds)
+              .returningAll()
+              .execute()),
+          );
+        }
+        return {
+          wasInserted: true,
+          wasUpdated: false,
+          entity: {
+            ...grouping,
+            externalIds,
+          } satisfies ProgramGroupingWithExternalIds,
+        };
+      });
   }
 
   private async handleProgramGroupings(

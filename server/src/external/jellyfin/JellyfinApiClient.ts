@@ -30,13 +30,18 @@ import {
 } from 'lodash-es';
 import { v4 } from 'uuid';
 import { z } from 'zod';
-import {
-  type ApiClientOptions,
-  BaseApiClient,
-  isQueryError,
-  type QueryErrorResult,
-  type QueryResult,
-} from '../BaseApiClient.js';
+import type { ProgramType } from '../../db/schema/Program.ts';
+import type { ProgramGroupingType } from '../../db/schema/ProgramGrouping.ts';
+import type {
+  JellyfinEpisode,
+  JellyfinMovie,
+  JellyfinSeason,
+  JellyfinSeries,
+  SpecificJellyfinType,
+} from '../../types/JellyfinTypes.ts';
+import { isJellyfinType } from '../../types/JellyfinTypes.ts';
+import type { ApiClientOptions, QueryResult } from '../BaseApiClient.js';
+import { MediaSourceApiClient } from '../MediaSourceApiClient.ts';
 
 const RequiredLibraryFields = [
   'Path',
@@ -51,7 +56,9 @@ const RequiredLibraryFields = [
   'OfficialRating',
   'ProviderIds',
   'Chapters',
-];
+  'MediaStreams',
+  'MediaSources',
+] satisfies JellyfinItemFields[];
 
 function getJellyfinAuthorization(
   apiKey: Maybe<string>,
@@ -89,7 +96,15 @@ export type JellyfinGetItemsQuery = {
   hasTvdbId?: boolean;
 };
 
-export class JellyfinApiClient extends BaseApiClient<JellyfinApiClientOptions> {
+type JellyfinItemTypes = {
+  [ProgramType.Movie]: JellyfinItem;
+  [ProgramGroupingType.Show]: JellyfinItem;
+};
+
+export class JellyfinApiClient extends MediaSourceApiClient<
+  JellyfinItemTypes,
+  JellyfinApiClientOptions
+> {
   protected redacter = new JellyfinRequestRedacter();
 
   constructor(options: JellyfinApiClientOptions) {
@@ -209,14 +224,27 @@ export class JellyfinApiClient extends BaseApiClient<JellyfinApiClientOptions> {
     });
   }
 
-  async getItem(
+  async getItemOfType<ItemTypeT extends JellyfinItemKind>(
     itemId: string,
+    itemType: ItemTypeT,
+    extraFields: JellyfinItemFields[] = [],
+  ): Promise<QueryResult<Maybe<SpecificJellyfinType<ItemTypeT>>>> {
+    return this.getItem(itemId, itemType, extraFields).then((result) => {
+      return result.mapPure((item) =>
+        item && isJellyfinType(item, itemType) ? item : undefined,
+      );
+    });
+  }
+
+  async getItem<ItemTypeT extends JellyfinItemKind>(
+    itemId: string,
+    itemType: ItemTypeT | null = null,
     extraFields: JellyfinItemFields[] = [],
   ): Promise<QueryResult<Maybe<JellyfinItem>>> {
     const result = await this.getItems(
       null,
       null,
-      null,
+      itemType ? [itemType] : null,
       ['MediaStreams', 'MediaSources', ...extraFields],
       { offset: 0, limit: 1 },
       {
@@ -224,13 +252,9 @@ export class JellyfinApiClient extends BaseApiClient<JellyfinApiClientOptions> {
       },
     );
 
-    if (isQueryError(result)) {
-      return result;
-    }
-
-    return this.makeSuccessResult(
-      find(result.data.Items, (item) => item.Id === itemId),
-    );
+    return result.mapPure((data) => {
+      return find(data.Items, (item) => item.Id === itemId);
+    });
   }
 
   async getItems(
@@ -267,6 +291,84 @@ export class JellyfinApiClient extends BaseApiClient<JellyfinApiClientOptions> {
         (v) => isNil(v) || (!isNumber(v) && isEmpty(v)),
       ),
     });
+  }
+
+  getMovieLibraryContents(
+    parentId: string,
+    pageSize: number = 50,
+  ): AsyncIterable<JellyfinMovie> {
+    return this.getChildContents(parentId, 'Movie', [], pageSize);
+  }
+
+  getTvShowLibraryContents(
+    parentId: string,
+    pageSize: number = 50,
+  ): AsyncIterable<JellyfinSeries> {
+    return this.getChildContents(parentId, 'Series', ['Overview'], pageSize);
+  }
+
+  getTvShowSeasons(
+    parentId: string,
+    pageSize: number = 50,
+  ): AsyncIterable<JellyfinSeason> {
+    return this.getChildContents(parentId, 'Season', ['Overview'], pageSize);
+  }
+
+  getEpisodes(
+    parentId: string,
+    pageSize: number = 50,
+  ): AsyncIterable<JellyfinEpisode> {
+    return this.getChildContents(parentId, 'Episode', [], pageSize);
+  }
+
+  private async *getChildContents<ItemTypeT extends JellyfinItemKind>(
+    parentId: string,
+    itemType: ItemTypeT,
+    extraFields: JellyfinItemFields[] = [],
+    pageSize: number = 50,
+  ): AsyncIterable<SpecificJellyfinType<ItemTypeT>> {
+    const count = await this.getChildItemCount(parentId);
+    if (count.isFailure()) {
+      return count;
+    }
+
+    const totalPages = Math.ceil(count.get() / pageSize);
+
+    for (let page = 0; page <= totalPages; page++) {
+      const chunkResult = await this.getItems(
+        null,
+        parentId,
+        [itemType],
+        extraFields,
+        {
+          offset: page * pageSize,
+          limit: pageSize,
+        },
+      );
+
+      if (chunkResult.isFailure()) {
+        throw chunkResult.error;
+      }
+
+      for (const item of chunkResult.get().Items ?? []) {
+        if (isJellyfinType(item, itemType)) {
+          yield item;
+        }
+      }
+    }
+
+    return;
+  }
+
+  async getChildItemCount(parentId: string) {
+    return this.doTypeCheckedGet('/Items', JellyfinLibraryItemsResponse, {
+      params: {
+        userId: this.options.userId,
+        parentId,
+        startIndex: 0,
+        limit: 0,
+      },
+    }).then((_) => _.map((response) => response.TotalRecordCount));
   }
 
   getThumbUrl(id: string) {
@@ -344,9 +446,9 @@ export class JellyfinApiClient extends BaseApiClient<JellyfinApiClientOptions> {
     return `${opts.uri}/Items/${opts.itemKey}/Images/Primary`;
   }
 
-  protected override preRequestValidate(
+  protected override preRequestValidate<T>(
     req: AxiosRequestConfig,
-  ): Maybe<QueryErrorResult> {
+  ): Maybe<QueryResult<T>> {
     if (isEmpty(this.options.accessToken)) {
       return this.makeErrorResult(
         'no_access_token',

@@ -4,16 +4,21 @@ import { configureAxiosLogging } from '@/util/axios.js';
 import { isDefined } from '@/util/index.js';
 import type { Logger } from '@/util/logging/LoggerFactory.js';
 import { LoggerFactory } from '@/util/logging/LoggerFactory.js';
+import { type TupleToUnion } from '@tunarr/types';
 import type {
   AxiosHeaderValue,
   AxiosInstance,
   AxiosRequestConfig,
 } from 'axios';
 import axios, { isAxiosError } from 'axios';
-import { isError, isString } from 'lodash-es';
+import type { Duration } from 'dayjs/plugin/duration.js';
+import { has, isError, isString } from 'lodash-es';
+import PQueue from 'p-queue';
 import type { MarkOptional, StrictOmit } from 'ts-essentials';
 import type { z } from 'zod';
 import type { MediaSource } from '../db/schema/MediaSource.ts';
+import { WrappedError } from '../types/errors.ts';
+import { Result } from '../types/result.ts';
 
 export type ApiClientOptions = StrictOmit<
   MarkOptional<MediaSource, 'uuid'>,
@@ -28,40 +33,52 @@ export type ApiClientOptions = StrictOmit<
     [key: string]: AxiosHeaderValue;
   };
   enableRequestCache?: boolean;
+  queueOpts?: {
+    concurrency: number;
+    interval: Duration;
+  };
 };
 
-export type QuerySuccessResult<T> = {
-  type: 'success';
-  data: T;
+export type RemoteMediaSourceOptions = ApiClientOptions & {
+  apiKey: string;
 };
 
-type QueryErrorCode =
-  | 'not_found'
-  | 'no_access_token'
-  | 'parse_error'
-  | 'generic_request_error';
+const QueryErrorCodes = [
+  'not_found',
+  'no_access_token',
+  'parse_error',
+  'generic_request_error',
+];
+type QueryErrorCode = TupleToUnion<typeof QueryErrorCodes>;
 
-export type QueryErrorResult = {
-  type: 'error';
-  code: QueryErrorCode;
-  message?: string;
-};
+export abstract class QueryError extends WrappedError {
+  readonly type: QueryErrorCode;
 
-export type QueryResult<T> = QuerySuccessResult<T> | QueryErrorResult;
+  static isQueryError(e: unknown): e is QueryError {
+    return (
+      has(e, 'type') &&
+      isString(e.type) &&
+      QueryErrorCodes.some((x) => x === e.type)
+    );
+  }
 
-export function isQueryError(x: QueryResult<unknown>): x is QueryErrorResult {
-  return x.type === 'error';
+  static genericQueryError(message?: string) {
+    return this.create('generic_request_error', message);
+  }
+
+  static create(type: QueryErrorCode, message?: string) {
+    return new (class extends QueryError {
+      type = type;
+    })(message);
+  }
 }
 
-export function isQuerySuccess<T>(
-  x: QueryResult<T>,
-): x is QuerySuccessResult<T> {
-  return x.type === 'success';
-}
+export type QueryResult<T> = Result<T, QueryError>;
 
 export abstract class BaseApiClient<
   OptionsType extends ApiClientOptions = ApiClientOptions,
 > {
+  private queue?: PQueue;
   protected logger: Logger;
   protected axiosInstance: AxiosInstance;
   protected redacter?: AxiosRequestRedacter;
@@ -83,6 +100,13 @@ export abstract class BaseApiClient<
         ...(options.extraHeaders ?? {}),
       },
     });
+
+    if (options.queueOpts) {
+      this.queue = new PQueue({
+        concurrency: options.queueOpts.concurrency,
+        interval: options.queueOpts.interval.asMilliseconds(),
+      });
+    }
 
     configureAxiosLogging(this.axiosInstance, this.logger);
   }
@@ -122,28 +146,25 @@ export abstract class BaseApiClient<
     return this.makeErrorResult('parse_error');
   }
 
-  protected preRequestValidate(
+  protected preRequestValidate<T>(
     _req: AxiosRequestConfig,
-  ): Maybe<QueryErrorResult> {
+  ): Maybe<QueryResult<T>> {
     return;
   }
 
-  protected makeErrorResult(
-    code: QueryErrorCode,
+  protected makeErrorResult<T>(
+    type: QueryErrorCode,
     message?: string,
-  ): QueryErrorResult {
-    return {
-      type: 'error',
-      code,
-      message,
-    };
+  ): QueryResult<T> {
+    return Result.failure<T, QueryError>({
+      type,
+      name: type,
+      message: message ?? 'Unknown Error',
+    });
   }
 
-  protected makeSuccessResult<T>(data: T): QuerySuccessResult<T> {
-    return {
-      type: 'success',
-      data,
-    };
+  protected makeSuccessResult<T>(data: T): QueryResult<T> {
+    return Result.success<T, QueryError>(data);
   }
 
   doGet<T>(req: Omit<AxiosRequestConfig, 'method'>) {
@@ -170,7 +191,11 @@ export abstract class BaseApiClient<
 
   protected async doRequest<T>(req: AxiosRequestConfig): Promise<Try<T>> {
     try {
-      const response = await this.axiosInstance.request<T>(req);
+      const response = await (this.queue
+        ? this.queue.add(() => this.axiosInstance.request<T>(req), {
+            throwOnTimeout: true,
+          })
+        : this.axiosInstance.request<T>(req));
       return response.data;
     } catch (error) {
       if (isAxiosError(error)) {

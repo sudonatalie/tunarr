@@ -3,6 +3,7 @@ import { ProgramExternalIdType } from '@/db/custom_types/ProgramExternalIdType.j
 import type { MediaSource } from '@/db/schema/MediaSource.js';
 import { ProgramType } from '@/db/schema/Program.js';
 import { ProgramGroupingType } from '@/db/schema/ProgramGrouping.js';
+import { AllProgramGroupingFields } from '@/db/schema/ProgramGrouping.ts';
 import { JellyfinApiClient } from '@/external/jellyfin/JellyfinApiClient.js';
 import { PlexApiClient } from '@/external/plex/PlexApiClient.js';
 import { TruthyQueryParam } from '@/types/schemas.js';
@@ -33,7 +34,6 @@ import {
 } from '../db/custom_types/ProgramSourceType.ts';
 import {
   AllProgramFields,
-  AllProgramGroupingFields,
   selectProgramsBuilder,
 } from '../db/programQueryHelpers.ts';
 

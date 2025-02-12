@@ -23,6 +23,7 @@ export const JellyfinItemFields = z.enum([
   'MediaSourceCount',
   'MediaSources',
   'OriginalTitle',
+  'OfficialRating',
   'Overview',
   'ParentId',
   'Path',

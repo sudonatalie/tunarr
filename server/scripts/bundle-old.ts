@@ -77,6 +77,7 @@ const result = await esbuild.build({
     'process.env.TUNARR_BUILD': `"${process.env.TUNARR_BUILD}"`,
     'process.env.TUNARR_EDGE_BUILD': `"${isEdgeBuild}"`,
     'import.meta.url': '__import_meta_url',
+    'import.meta.dirname': '__import_meta_dirname',
   },
 });
 

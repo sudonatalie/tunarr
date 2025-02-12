@@ -1,21 +1,38 @@
-import { PlexRequestRedacter } from '@/external/plex/PlexRequestRedacter.js';
-import type { Maybe } from '@/types/util.js';
+import { type Maybe } from '@/types/util.js';
 import { getChannelId } from '@/util/channels.js';
 import { isSuccess } from '@/util/index.js';
 import { getTunarrVersion } from '@/util/version.js';
 import { PlexClientIdentifier } from '@tunarr/shared/constants';
 import type {
-  PlexDvr,
-  PlexDvrsResponse,
-  PlexMedia,
-  PlexResource,
+  PlexEpisode,
+  PlexLibrarySections,
+  PlexMediaContainerMetadata,
+  PlexMediaContainerResponse,
+  PlexMovie,
+  PlexTvSeason,
+  PlexTvShow,
 } from '@tunarr/types/plex';
 import {
+  MakePlexMediaContainerResponseSchema,
+  PlexContainerStatsSchema,
+  type PlexDvr,
+  type PlexDvrsResponse,
+  PlexEpisodeSchema,
   PlexGenericMediaContainerResponseSchema,
+  type PlexMedia,
   PlexMediaContainerResponseSchema,
+  type PlexMetadataResponse,
+  PlexMovieMediaContainerResponseSchema,
+  type PlexResource,
+  PlexTvSeasonSchema,
+  PlexTvShowSchema,
 } from '@tunarr/types/plex';
-import type { AxiosRequestConfig, RawAxiosRequestHeaders } from 'axios';
-import { isAxiosError } from 'axios';
+import {
+  type AxiosRequestConfig,
+  type RawAxiosRequestHeaders,
+  isAxiosError,
+} from 'axios';
+import dayjs from 'dayjs';
 import { XMLParser } from 'fast-xml-parser';
 import {
   first,
@@ -27,18 +44,15 @@ import {
   map,
   reject,
 } from 'lodash-es';
-import type {
-  PlexMediaContainer,
-  PlexMediaContainerResponse,
-} from '../../types/plexApiTypes.js';
-import type { QueryErrorResult, QueryResult } from '../BaseApiClient.js';
-import {
-  type ApiClientOptions,
-  BaseApiClient,
-  isQueryError,
-  isQuerySuccess,
-} from '../BaseApiClient.js';
+import type { z } from 'zod';
+import type { ProgramType } from '../../db/schema/Program.ts';
+import type { ProgramGroupingType } from '../../db/schema/ProgramGrouping.ts';
+import { Result } from '../../types/result.ts';
+import type { ApiClientOptions } from '../BaseApiClient.js';
+import { QueryError, type QueryResult } from '../BaseApiClient.js';
+import { MediaSourceApiClient } from '../MediaSourceApiClient.ts';
 import { PlexQueryCache } from './PlexQueryCache.js';
+import { PlexRequestRedacter } from './PlexRequestRedacter.ts';
 
 const PlexCache = new PlexQueryCache();
 
@@ -47,7 +61,12 @@ const PlexHeaders = {
   'X-Plex-Client-Identifier': PlexClientIdentifier,
 };
 
-export class PlexApiClient extends BaseApiClient {
+type PlexTypes = {
+  [ProgramType.Movie]: PlexMovie;
+  [ProgramGroupingType.Show]: PlexTvShow;
+};
+
+export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
   protected redacter = new PlexRequestRedacter();
   private opts: ApiClientOptions;
   private accessToken: string;
@@ -60,9 +79,12 @@ export class PlexApiClient extends BaseApiClient {
         'X-Plex-Version': getTunarrVersion(),
         'X-Plex-Token': opts.accessToken,
       },
+      queueOpts: {
+        concurrency: 5,
+        interval: dayjs.duration({ seconds: 1 }),
+      },
     });
     this.opts = opts;
-    // this.accessToken = opts.accessToken;
   }
 
   get serverName() {
@@ -81,16 +103,16 @@ export class PlexApiClient extends BaseApiClient {
   }
 
   // TODO: make all callers use this
-  private async doGetResult<T>(
+  private async doGetResult<T extends PlexMediaContainerMetadata>(
     path: string,
-    optionalHeaders: RawAxiosRequestHeaders = {},
+    config: Partial<Omit<AxiosRequestConfig, 'method' | 'url'>> = {},
     skipCache: boolean = false,
-  ): Promise<QueryResult<PlexMediaContainer<T>>> {
-    const getter = async () => {
+  ): Promise<QueryResult<T>> {
+    const getter = async (): Promise<QueryResult<T>> => {
       const req: AxiosRequestConfig = {
         method: 'get',
         url: path,
-        headers: optionalHeaders,
+        headers: config.headers,
       };
 
       if (this.accessToken === '') {
@@ -117,47 +139,187 @@ export class PlexApiClient extends BaseApiClient {
     };
 
     return this.opts.enableRequestCache && !skipCache
-      ? await PlexCache.getOrSetPlexResult(this.opts.name, path, getter)
+      ? await PlexCache.getOrSetPlexResult<T>(this.opts.name, path, getter)
       : await getter();
   }
 
   // We're just keeping the old contract here right now...
-  async doGetPath<T>(
+  async doGetPath<T extends PlexMediaContainerMetadata>(
     path: string,
     optionalHeaders: RawAxiosRequestHeaders = {},
     skipCache: boolean = false,
-  ): Promise<Maybe<PlexMediaContainer<T>>> {
-    const result = await this.doGetResult<PlexMediaContainer<T>>(
+  ): Promise<Maybe<T>> {
+    const result = await this.doGetResult<T>(
       path,
-      optionalHeaders,
+      { headers: optionalHeaders },
       skipCache,
     );
-    if (isQuerySuccess(result)) {
-      return result.data;
-    } else {
-      return;
+
+    return result.orUndefined();
+  }
+
+  getMovieLibraryContents(
+    libraryId: string,
+    pageSize: number = 50,
+  ): AsyncIterable<PlexMovie> {
+    return this.getLibraryContents<PlexMovie>(
+      libraryId,
+      PlexMovieMediaContainerResponseSchema,
+      pageSize,
+    );
+  }
+
+  getTvShowLibraryContents(
+    libraryId: string,
+    pageSize: number = 50,
+  ): AsyncGenerator<PlexTvShow> {
+    return this.getLibraryContents<PlexTvShow>(
+      libraryId,
+      MakePlexMediaContainerResponseSchema(PlexTvShowSchema),
+      pageSize,
+    );
+  }
+
+  getTvShowSeasons(tvShowKey: string, pageSize: number = 50) {
+    return this.getLibraryContents<PlexTvSeason>(
+      tvShowKey,
+      MakePlexMediaContainerResponseSchema(PlexTvSeasonSchema),
+      pageSize,
+      `/library/metadata/${tvShowKey}/children`,
+    );
+  }
+
+  getEpisodes(tvSeasonKey: string, pageSize: number = 50) {
+    return this.getLibraryContents<PlexEpisode>(
+      tvSeasonKey,
+      MakePlexMediaContainerResponseSchema(PlexEpisodeSchema),
+      pageSize,
+      `/library/metadata/${tvSeasonKey}/children`,
+    );
+  }
+
+  private async *getLibraryContents<
+    ItemType extends PlexMedia,
+    SchemaType extends z.ZodType<PlexMetadataResponse<ItemType>> = z.ZodType<
+      PlexMetadataResponse<ItemType>
+    >,
+  >(
+    libraryId: string,
+    schema: SchemaType,
+    pageSize: number = 50,
+    key: string = `/library/sections/${libraryId}/all`,
+  ): AsyncGenerator<ItemType> {
+    const count = await this.getChildCount(key);
+    if (count.isFailure()) {
+      throw count.error;
     }
+
+    const totalPages = Math.ceil(count.get() / pageSize);
+    for (let page = 0; page <= totalPages; page++) {
+      const chunkResult = await this.doTypeCheckedGet(key, schema, {
+        params: {
+          'X-Plex-Container-Size': pageSize,
+          'X-Plex-Container-Start': page * pageSize,
+        },
+      });
+
+      if (chunkResult.isFailure()) {
+        throw chunkResult.error;
+      }
+
+      for (const item of chunkResult.get().MediaContainer.Metadata ?? []) {
+        yield item;
+      }
+    }
+
+    return;
+  }
+
+  async getLibraries() {
+    return this.doGetResult<PlexLibrarySections>('/library/sections');
+  }
+
+  async getLibraryCount(libraryId: string) {
+    return this.getChildCount(`/library/sections/${libraryId}/all`);
+  }
+
+  async getItemChildCount(key: string) {
+    return this.getChildCount(`/library/metadata/${key}/children`);
+  }
+
+  private getChildCount(key: string) {
+    return this.doTypeCheckedGet(key, PlexContainerStatsSchema, {
+      params: {
+        'X-Plex-Container-Size': 0,
+        'X-Plex-Container-Start': 0,
+      },
+    }).then((result) =>
+      result.map(
+        (stats) => stats.MediaContainer.totalSize ?? stats?.MediaContainer.size,
+      ),
+    );
+  }
+
+  private async getItemMetadataInternal<
+    ItemType,
+    SchemaType extends z.ZodType<PlexMetadataResponse<ItemType>>,
+  >(key: string, schema: SchemaType): Promise<QueryResult<ItemType>> {
+    const responseResult = await this.doTypeCheckedGet(
+      `/library/metadata/${key}`,
+      schema,
+      {
+        params: {
+          includeMarkers: 1,
+          includeChapters: 1,
+          includeChildren: 1,
+          includeLoudnessRamps: 1,
+          includeExtras: 1,
+        },
+      },
+    );
+
+    return responseResult
+      .flatMap<ItemType>((parsedResponse) => {
+        const media = first(parsedResponse.MediaContainer.Metadata);
+        if (!isUndefined(media)) {
+          return this.makeSuccessResult<ItemType>(media);
+        }
+        this.logger.error(
+          'Could not extract Metadata object for Plex media, key = %s',
+          key,
+        );
+        return this.makeErrorResult('parse_error');
+      })
+      .mapError((e) =>
+        QueryError.isQueryError(e)
+          ? e
+          : QueryError.genericQueryError(e.message),
+      );
   }
 
   async getItemMetadata(key: string): Promise<QueryResult<PlexMedia>> {
-    const parsedResponse = await this.doTypeCheckedGet(
-      `/library/metadata/${key}`,
-      PlexMediaContainerResponseSchema,
+    return this.getItemMetadataInternal(key, PlexMediaContainerResponseSchema);
+  }
+
+  async getMovieMetadata(key: string): Promise<QueryResult<PlexMovie>> {
+    return this.getItemMetadataInternal(
+      key,
+      PlexMovieMediaContainerResponseSchema,
     );
+  }
 
-    if (isQuerySuccess(parsedResponse)) {
-      const media = first(parsedResponse.data.MediaContainer.Metadata);
-      if (!isUndefined(media)) {
-        return this.makeSuccessResult(media);
-      }
-      this.logger.error(
-        'Could not extract Metadata object for Plex media, key = %s',
-        key,
-      );
-      return this.makeErrorResult('parse_error');
-    }
+  async getSeasonMetadata(key: string): Promise<QueryResult<PlexTvSeason>> {
+    return this.getItemMetadataInternal(
+      key,
+      MakePlexMediaContainerResponseSchema(PlexTvSeasonSchema),
+    );
+  }
 
-    return parsedResponse;
+  async getEpisodeMetadata(key: string): Promise<QueryResult<PlexEpisode>> {
+    return this.getItemMetadataInternal(
+      key,
+      MakePlexMediaContainerResponseSchema(PlexEpisodeSchema),
+    );
   }
 
   async checkServerStatus() {
@@ -166,8 +328,8 @@ export class PlexApiClient extends BaseApiClient {
         '/',
         PlexGenericMediaContainerResponseSchema,
       );
-      if (isQueryError(result)) {
-        throw new Error(result.message);
+      if (result.isFailure()) {
+        throw result.error;
       } else if (isUndefined(result)) {
         // Parse error - indicates that the URL is probably not a Plex server
         return false;
@@ -182,7 +344,7 @@ export class PlexApiClient extends BaseApiClient {
   async getDvrs() {
     try {
       const result = await this.doGetPath<PlexDvrsResponse>('/livetv/dvrs');
-      return isUndefined(result?.Dvr) ? [] : result?.Dvr;
+      return result?.Dvr ?? [];
     } catch (err) {
       this.logger.error(err, 'GET /livetv/drs failed');
       throw err;
@@ -278,13 +440,15 @@ export class PlexApiClient extends BaseApiClient {
     this.opts.enableRequestCache = enable;
   }
 
-  protected override preRequestValidate(
+  protected override preRequestValidate<T>(
     req: AxiosRequestConfig,
-  ): Maybe<QueryErrorResult> {
+  ): Maybe<QueryResult<T>> {
     if (isEmpty(this.accessToken)) {
-      return this.makeErrorResult(
-        'no_access_token',
-        'No Plex token provided. Please use the SignIn method or provide a X-Plex-Token in the Plex constructor.',
+      return Result.failure(
+        QueryError.create(
+          'no_access_token',
+          'No Plex token provided. Please use the SignIn method or provide a X-Plex-Token in the Plex constructor.',
+        ),
       );
     }
     return super.preRequestValidate(req);

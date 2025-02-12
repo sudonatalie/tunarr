@@ -54,6 +54,7 @@ export interface ISettingsDB extends TypedEventEmitter<SettingsChangeEvents> {
 
   flush(): Promise<void>;
 }
+
 export type ReadableFfmpegSettings = DeepReadonly<FfmpegSettings>;
 export type SettingsChangeEvents = {
   change(): void;

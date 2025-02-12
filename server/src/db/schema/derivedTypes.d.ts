@@ -1,12 +1,19 @@
 import type { TranscodeConfig } from '@/db/schema/TranscodeConfig.js';
 import type { MarkNonNullable } from '@/types/util.js';
-import type { DeepNullable, MarkRequired } from 'ts-essentials';
+import type { DeepNullable, MarkRequired, StrictOmit } from 'ts-essentials';
 import type { Channel, ChannelFillerShow } from './Channel.ts';
 import type { FillerShow } from './FillerShow.ts';
-import type { ProgramDao } from './Program.ts';
-import type { MinimalProgramExternalId } from './ProgramExternalId.ts';
-import type { ProgramGrouping } from './ProgramGrouping.ts';
-import type { ProgramGroupingExternalId } from './ProgramGroupingExternalId.ts';
+import type { MediaSource, MediaSourceLibrary } from './MediaSource.ts';
+import type { NewProgramDao, ProgramDao } from './Program.ts';
+import type {
+  MinimalProgramExternalId,
+  NewSingleOrMultiExternalId,
+} from './ProgramExternalId.ts';
+import type { NewProgramGrouping, ProgramGrouping } from './ProgramGrouping.ts';
+import type {
+  NewProgramGroupingExternalId,
+  ProgramGroupingExternalId,
+} from './ProgramGroupingExternalId.ts';
 
 export type ProgramWithRelations = ProgramDao & {
   tvShow?: DeepNullable<Partial<ProgramGroupingWithExternalIds>> | null;
@@ -51,6 +58,24 @@ export type ProgramWithExternalIds = ProgramDao & {
   externalIds: MinimalProgramExternalId[];
 };
 
+export type NewProgramWithExternalIds = NewProgramDao & {
+  externalIds: NewSingleOrMultiExternalId[];
+};
+
 export type ProgramGroupingWithExternalIds = ProgramGrouping & {
   externalIds: ProgramGroupingExternalId[];
+};
+
+export type NewProgramGroupingWithExternalIds = NewProgramGrouping & {
+  externalIds: NewProgramGroupingExternalId[];
+};
+
+export type TvShow = {
+  [K in keyof StrictOmit<ProgramGrouping, 'type'>]: ProgramGrouping[K];
+} & {
+  type: 'show';
+};
+
+export type MediaSourceWithLibraries = MediaSource & {
+  libraries: MediaSourceLibrary[];
 };

@@ -1,6 +1,17 @@
 import { isError, isString } from 'lodash-es';
 
-export abstract class TypedError extends Error {
+// Extend Error but allow different hierarchies of typed errors
+export abstract class WrappedError extends Error {
+  cause?: Error;
+
+  static fromError(e: Error): WrappedError {
+    return new (class extends WrappedError {
+      cause?: Error | undefined = e;
+    })();
+  }
+}
+
+export abstract class TypedError extends WrappedError {
   readonly type: KnownErrorTypes;
 
   constructor(public message: string) {

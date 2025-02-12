@@ -32,9 +32,7 @@ import { v4 } from 'uuid';
 import { z } from 'zod';
 import {
   BaseApiClient,
-  isQueryError,
   type ApiClientOptions,
-  type QueryErrorResult,
   type QueryResult,
 } from '../BaseApiClient.ts';
 
@@ -232,12 +230,8 @@ export class EmbyApiClient extends BaseApiClient<EmbyApiClientOptions> {
       },
     );
 
-    if (isQueryError(result)) {
-      return result;
-    }
-
-    return this.makeSuccessResult(
-      find(result.data.Items, (item) => item.Id === itemId),
+    return result.mapPure(({ Items }) =>
+      find(Items, (item) => item.Id === itemId),
     );
   }
 

@@ -2,55 +2,25 @@ import { type TupleToUnion } from '@tunarr/types';
 import type {
   CaseWhenBuilder,
   ExpressionBuilder,
+  SelectQueryBuilder,
   UpdateQueryBuilder,
   UpdateResult,
 } from 'kysely';
 import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/sqlite';
 import { isBoolean, isEmpty, keys, merge, reduce } from 'lodash-es';
 import type { DeepPartial, DeepRequired, StrictExclude } from 'ts-essentials';
+import type { Replace } from '../types/util.ts';
 import { getDatabase } from './DBAccess.ts';
 import type { FillerShowTable as RawFillerShow } from './schema/FillerShow.js';
 import type { ProgramTable as RawProgram } from './schema/Program.ts';
 import { ProgramType } from './schema/Program.ts';
 import type { ProgramExternalId } from './schema/ProgramExternalId.ts';
 import { ProgramExternalIdFieldsWithAlias } from './schema/ProgramExternalId.ts';
-import type { ProgramGroupingTable as RawProgramGrouping } from './schema/ProgramGrouping.ts';
+import type { ProgramGroupingFields } from './schema/ProgramGrouping.ts';
+import { AllProgramGroupingFields } from './schema/ProgramGrouping.ts';
 import type { ProgramGroupingExternalId } from './schema/ProgramGroupingExternalId.ts';
 import { ProgramGroupingExternalIdFieldsWithAlias } from './schema/ProgramGroupingExternalId.ts';
 import type { DB } from './schema/db.ts';
-
-type ProgramGroupingFields<Alias extends string = 'programGrouping'> =
-  readonly `${Alias}.${keyof RawProgramGrouping}`[];
-
-const ProgramGroupingKeys: (keyof RawProgramGrouping)[] = [
-  'artistUuid',
-  'createdAt',
-  'icon',
-  'index',
-  'showUuid',
-  'summary',
-  'title',
-  'type',
-  'updatedAt',
-  'uuid',
-  'year',
-];
-
-// TODO move this definition to the ProgramGrouping DAO file
-export const AllProgramGroupingFields: ProgramGroupingFields =
-  ProgramGroupingKeys.map((key) => `programGrouping.${key}` as const);
-
-export const AllProgramGroupingFieldsAliased = <Alias extends string>(
-  alias: Alias,
-): ProgramGroupingFields<Alias> =>
-  ProgramGroupingKeys.map((key) => `${alias}.${key}` as const);
-
-export const MinimalProgramGroupingFields: ProgramGroupingFields = [
-  'programGrouping.uuid',
-  'programGrouping.title',
-  'programGrouping.year',
-  // 'programGrouping.index',
-];
 
 type FillerShowFields = readonly `fillerShow.${keyof RawFillerShow}`[];
 
@@ -217,34 +187,31 @@ export const AllProgramJoins: ProgramJoins = {
   customShows: true,
 };
 
-type Replace<
-  T extends string,
-  S extends string,
-  D extends string,
-  A extends string = '',
-> = T extends `${infer L}${S}${infer R}`
-  ? Replace<R, S, D, `${A}${L}${D}`>
-  : `${A}${T}`;
-
 type ProgramField = `program.${keyof RawProgram}`;
 type ProgramFields = readonly ProgramField[];
 
-// const ProgramUpsertMapping =
-
-export const AllProgramFields: ProgramFields = [
+export const AllProgramFields = [
+  'program.uuid',
+  'program.createdAt',
+  'program.updatedAt',
   'program.albumName',
+  'program.canonicalId',
+  'program.icon',
+  'program.summary',
+  'program.title',
+  'program.type',
+  'program.year',
+  'program.artistUuid',
+  'program.externalKey',
+  'program.libraryId',
   'program.albumUuid',
   'program.artistName',
-  'program.artistUuid',
-  'program.createdAt',
   'program.duration',
   'program.episode',
   'program.episodeIcon',
-  'program.externalKey',
   'program.externalSourceId',
   'program.filePath',
   'program.grandparentExternalKey',
-  'program.icon',
   'program.originalAirDate',
   'program.parentExternalKey',
   'program.plexFilePath',
@@ -256,14 +223,9 @@ export const AllProgramFields: ProgramFields = [
   'program.showIcon',
   'program.showTitle',
   'program.sourceType',
-  'program.summary',
-  'program.title',
   'program.tvShowUuid',
-  'program.type',
-  'program.updatedAt',
-  'program.uuid',
-  'program.year',
-];
+  'program.mediaSourceId',
+] as const;
 
 type ProgramUpsertFields = StrictExclude<
   Replace<ProgramField, 'program', 'excluded'>,
@@ -277,6 +239,7 @@ const ProgramUpsertIgnoreFields = [
   'program.albumUuid',
   'program.artistUuid',
   'program.seasonUuid',
+  'program.libraryId',
 ] as const;
 
 type KnownProgramUpsertFields = StrictExclude<
@@ -300,27 +263,36 @@ export const ProgramUpsertFields: ProgramUpsertFields[] =
 export type WithProgramsOptions = {
   joins?: Partial<ProgramJoins>;
   fields?: ProgramFields;
+  includeGroupingExternalIds?: boolean;
 };
 
 const defaultWithProgramOptions: DeepRequired<WithProgramsOptions> = {
   joins: defaultProgramJoins,
   fields: AllProgramFields,
+  includeGroupingExternalIds: false,
 };
 
-function baseWithProgramsExpressionBuilder(
-  eb: ExpressionBuilder<
-    DB,
-    | 'channel'
-    | 'channelPrograms'
-    | 'channelFallback'
-    | 'fillerShowContent'
-    | 'fillerShow'
-    | 'customShow'
-    | 'customShowContent'
-    | 'programExternalId'
-  >,
-  opts: DeepRequired<WithProgramsOptions>,
-) {
+interface CommonProgramBuilder<InTypes extends keyof DB = keyof DB> {
+  selectFrom(
+    from: 'program',
+  ): SelectQueryBuilder<DB, 'program' | InTypes, object>;
+}
+
+function baseWithProgramsExpressionBuilder<
+  Builder extends CommonProgramBuilder,
+>(eb: Builder, opts: DeepRequired<WithProgramsOptions>) {
+  function getJoinFields(key: keyof ProgramJoins) {
+    if (!opts.joins[key]) {
+      return [];
+    }
+
+    if (isBoolean(opts.joins[key])) {
+      return opts.joins[key] ? AllProgramGroupingFields : [];
+    }
+
+    return opts.joins[key];
+  }
+
   return eb
     .selectFrom('program')
     .select(opts.fields)
@@ -328,15 +300,38 @@ function baseWithProgramsExpressionBuilder(
       qb.select((eb) =>
         withTrackAlbum(
           eb,
-          isBoolean(opts.joins.trackAlbum)
-            ? AllProgramGroupingFields
-            : opts.joins.trackAlbum,
+          getJoinFields('trackAlbum'),
+          opts.includeGroupingExternalIds,
         ),
       ),
     )
-    .$if(!!opts.joins.trackArtist, (qb) => qb.select(withTrackArtist))
-    .$if(!!opts.joins.tvSeason, (qb) => qb.select(withTvSeason))
-    .$if(!!opts.joins.tvSeason, (qb) => qb.select(withTvShow))
+    .$if(!!opts.joins.trackArtist, (qb) =>
+      qb.select((eb) =>
+        withTrackArtist(
+          eb,
+          getJoinFields('trackArtist'),
+          opts.includeGroupingExternalIds,
+        ),
+      ),
+    )
+    .$if(!!opts.joins.tvSeason, (qb) =>
+      qb.select((eb) =>
+        withTvSeason(
+          eb,
+          getJoinFields('tvSeason'),
+          opts.includeGroupingExternalIds,
+        ),
+      ),
+    )
+    .$if(!!opts.joins.tvShow, (qb) =>
+      qb.select((eb) =>
+        withTvShow(
+          eb,
+          getJoinFields('tvShow'),
+          opts.includeGroupingExternalIds,
+        ),
+      ),
+    )
     .$if(!!opts.joins.customShows, (qb) => qb.select(withProgramCustomShows));
 }
 
@@ -349,23 +344,7 @@ export function selectProgramsBuilder(
     defaultWithProgramOptions,
     optOverides,
   );
-  return getDatabase()
-    .selectFrom('program')
-    .select(opts.fields)
-    .$if(!!opts.joins.trackAlbum, (qb) =>
-      qb.select((eb) =>
-        withTrackAlbum(
-          eb,
-          isBoolean(opts.joins.trackAlbum)
-            ? AllProgramGroupingFields
-            : opts.joins.trackAlbum,
-        ),
-      ),
-    )
-    .$if(!!opts.joins.trackArtist, (qb) => qb.select(withTrackArtist))
-    .$if(!!opts.joins.tvSeason, (qb) => qb.select(withTvSeason))
-    .$if(!!opts.joins.tvSeason, (qb) => qb.select(withTvShow))
-    .$if(!!opts.joins.customShows, (qb) => qb.select(withProgramCustomShows));
+  return baseWithProgramsExpressionBuilder(getDatabase(), opts);
 }
 
 export function withPrograms(

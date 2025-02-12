@@ -2,7 +2,6 @@ import type { ContentBackedStreamLineupItem } from '@/db/derived_types/StreamLin
 import { type ISettingsDB } from '@/db/interfaces/ISettingsDB.js';
 import type { MediaSource } from '@/db/schema/MediaSource.js';
 import { ProgramType } from '@/db/schema/Program.js';
-import { isQueryError } from '@/external/BaseApiClient.js';
 import { MediaSourceApiFactory } from '@/external/MediaSourceApiFactory.js';
 import { KEYS } from '@/types/inject.js';
 import type { Maybe, Nullable } from '@/types/util.js';
@@ -82,10 +81,14 @@ export class EmbyStreamDetails {
     const expectedItemType = item.programType;
     const itemMetadataResult = await this.emby.getItem(item.externalKey);
 
-    if (isQueryError(itemMetadataResult)) {
+    if (itemMetadataResult.isFailure()) {
       this.logger.error(itemMetadataResult, 'Error getting Emby stream');
       return null;
-    } else if (isUndefined(itemMetadataResult.data)) {
+    }
+
+    const itemMetadata = itemMetadataResult.get();
+
+    if (isUndefined(itemMetadata)) {
       this.logger.error(
         'Emby item with ID %s does not exist. Underlying file might have change. Attempting to locate it.',
         item.externalKey,
@@ -106,8 +109,6 @@ export class EmbyStreamDetails {
 
       return null;
     }
-
-    const itemMetadata = itemMetadataResult.data;
 
     if (expectedItemType !== jellyfinItemTypeToProgramType(itemMetadata)) {
       this.logger.warn(
@@ -188,9 +189,9 @@ export class EmbyStreamDetails {
     let videoStreamDetails: Maybe<VideoStreamDetails>;
     if (isDefined(videoStream)) {
       const isAnamorphic =
-        videoStream.IsAnamorphic ??
+        (videoStream.IsAnamorphic ??
         (isNonEmptyString(videoStream.AspectRatio) &&
-          videoStream.AspectRatio.includes(':'))
+          videoStream.AspectRatio.includes(':')))
           ? extractIsAnamorphic(
               videoStream.Width ?? 1,
               videoStream.Height ?? 1,
@@ -278,8 +279,8 @@ export class EmbyStreamDetails {
       // TODO Use our proxy endpoint here
       const placeholderThumbPath =
         media.Type === 'Audio'
-          ? media.AlbumId ?? first(media.ArtistItems)?.Id ?? media.Id
-          : media.SeasonId ?? media.Id;
+          ? (media.AlbumId ?? first(media.ArtistItems)?.Id ?? media.Id)
+          : (media.SeasonId ?? media.Id);
 
       // We have to check that we can hit this URL or the stream will not work
       if (isNonEmptyString(placeholderThumbPath)) {

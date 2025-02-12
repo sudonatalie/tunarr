@@ -1,4 +1,5 @@
 import type z from 'zod';
+import type { MediaSourceLibrarySchema } from './schemas/settingsSchemas.js';
 import {
   type EmbyServerSettingsSchema,
   type JellyfinServerSettingsSchema,
@@ -16,6 +17,8 @@ export type JellyfinServerSettings = z.infer<
 export type EmbyServerSettings = z.infer<typeof EmbyServerSettingsSchema>;
 
 export type MediaSourceSettings = z.infer<typeof MediaSourceSettingsSchema>;
+
+export type MediaSourceLibrary = z.infer<typeof MediaSourceLibrarySchema>;
 
 export type MediaSourceType = MediaSourceSettings['type'];
 

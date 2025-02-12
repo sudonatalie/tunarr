@@ -6,21 +6,31 @@ import { nullToUndefined, wait } from '@/util/index.js';
 import { LoggerFactory } from '@/util/logging/LoggerFactory.js';
 import { numberToBoolean } from '@/util/sqliteUtil.js';
 import { seq } from '@tunarr/shared/util';
-import type { MediaSourceSettings } from '@tunarr/types';
+import type { MediaSourceLibrary, MediaSourceSettings } from '@tunarr/types';
 import { tag } from '@tunarr/types';
 import {
   BaseErrorSchema,
   BasicIdParamSchema,
   InsertMediaSourceRequestSchema,
+  UpdateMediaSourceLibraryRequest,
   UpdateMediaSourceRequestSchema,
 } from '@tunarr/types/api';
 import {
+  ContentProgramSchema,
   ExternalSourceTypeSchema,
+  MediaSourceLibrarySchema,
   MediaSourceSettingsSchema,
 } from '@tunarr/types/schemas';
-import { isError, isNil } from 'lodash-es';
+import { isEmpty, isError, isNil } from 'lodash-es';
 import { match, P } from 'ts-pattern';
 import z from 'zod';
+import { container } from '../container.ts';
+import { EntityMutex } from '../services/EntityMutex.ts';
+import { JellyfinMediaSourceMovieScanner } from '../services/scanner/JellyfinMediaSourceMovieScanner.ts';
+import { JellyfinMediaSourceTvShowScanner } from '../services/scanner/JellyfinMediaSourceTvShowScanner.ts';
+import { MediaSourceProgressService } from '../services/scanner/MediaSourceProgressService.ts';
+import { PlexMediaSourceMovieScanner } from '../services/scanner/PlexMediaSourceMovieScanner.ts';
+import { PlexMediaSourceTvShowScanner } from '../services/scanner/PlexMediaSourceTvShowScanner.ts';
 
 export const mediaSourceRouter: RouterPluginAsyncCallback = async (
   fastify,
@@ -43,6 +53,7 @@ export const mediaSourceRouter: RouterPluginAsyncCallback = async (
       },
     },
     async (req, res) => {
+      const entityLocker = container.get<EntityMutex>(EntityMutex);
       try {
         const sources = await req.serverCtx.mediaSourceDB.getAll();
 
@@ -59,6 +70,17 @@ export const mediaSourceRouter: RouterPluginAsyncCallback = async (
               clientIdentifier: nullToUndefined(source.clientIdentifier),
               sendChannelUpdates: numberToBoolean(source.sendChannelUpdates),
               sendGuideUpdates: numberToBoolean(source.sendGuideUpdates),
+              libraries: source.libraries.map(
+                (library) =>
+                  ({
+                    ...library,
+                    id: library.uuid,
+                    type: source.type,
+                    enabled: numberToBoolean(library.enabled),
+                    lastScannedAt: nullToUndefined(library.lastScannedAt),
+                    isLocked: entityLocker.isLibraryLocked(library),
+                  }) satisfies MediaSourceLibrary,
+              ),
             }))
             .otherwise(() => null);
         });
@@ -68,6 +90,216 @@ export const mediaSourceRouter: RouterPluginAsyncCallback = async (
         logger.error(err);
         return res.status(500).send('error');
       }
+    },
+  );
+
+  fastify.get(
+    '/media-sources/:id/libraries',
+    {
+      schema: {
+        tags: ['Media Source'],
+        params: BasicIdParamSchema,
+        response: {
+          200: z.array(MediaSourceLibrarySchema),
+          404: z.void(),
+        },
+      },
+    },
+    async (req, res) => {
+      const mediaSource = await req.serverCtx.mediaSourceDB.getById(
+        req.params.id,
+      );
+
+      if (!mediaSource) {
+        return res.status(404).send();
+      }
+
+      const entityLocker = container.get<EntityMutex>(EntityMutex);
+
+      return res.send(
+        mediaSource.libraries.map(
+          (library) =>
+            ({
+              ...library,
+              id: library.uuid,
+              type: mediaSource.type,
+              enabled: numberToBoolean(library.enabled),
+              lastScannedAt: nullToUndefined(library.lastScannedAt),
+              isLocked: entityLocker.isLibraryLocked(library),
+            }) satisfies MediaSourceLibrary,
+        ),
+      );
+    },
+  );
+
+  fastify.put(
+    '/media-sources/:id/libraries/:libraryId',
+    {
+      schema: {
+        tags: ['Media Source'],
+        params: BasicIdParamSchema.extend({
+          libraryId: z.string(),
+        }),
+        body: UpdateMediaSourceLibraryRequest,
+        response: {
+          200: MediaSourceLibrarySchema,
+          404: z.void(),
+        },
+      },
+    },
+    async (req, res) => {
+      const mediaSource = await req.serverCtx.mediaSourceDB.getById(
+        req.params.id,
+      );
+
+      if (!mediaSource) {
+        return res.status(404).send();
+      }
+
+      const updatedLibrary =
+        await req.serverCtx.mediaSourceDB.setLibraryEnabled(
+          req.params.id,
+          req.params.libraryId,
+          req.body.enabled,
+        );
+
+      const entityLocker = container.get(EntityMutex);
+
+      return res.send({
+        ...updatedLibrary,
+        id: updatedLibrary.uuid,
+        type: mediaSource.type,
+        enabled: numberToBoolean(updatedLibrary.enabled),
+        lastScannedAt: nullToUndefined(updatedLibrary.lastScannedAt),
+        isLocked: entityLocker.isLibraryLocked(updatedLibrary),
+      });
+    },
+  );
+
+  fastify.get(
+    '/media-libraries/:libraryId/programs',
+    {
+      schema: {
+        tags: ['Media Library'],
+        params: z.object({
+          libraryId: z.string(),
+        }),
+        response: {
+          200: z.array(ContentProgramSchema),
+          404: z.void(),
+        },
+      },
+    },
+    async (req, res) => {
+      const library = await req.serverCtx.mediaSourceDB.getLibrary(
+        req.params.libraryId,
+      );
+
+      if (!library) {
+        return res.status(404).send();
+      }
+
+      const programs =
+        await req.serverCtx.programDB.getMediaSourceLibraryPrograms(
+          req.params.libraryId,
+        );
+
+      return res.send(
+        programs.map((program) =>
+          req.serverCtx.programConverter.programDaoToContentProgram(
+            program,
+            program.externalIds ?? [],
+          ),
+        ),
+      );
+    },
+  );
+
+  fastify.get(
+    '/media-libraries/:libraryId/status',
+    {
+      schema: {
+        params: z.object({
+          library: z.string(),
+        }),
+      },
+    },
+    async (req, res) => {
+      const progressService = container.get<MediaSourceProgressService>(
+        MediaSourceProgressService,
+      );
+      const state = progressService.getScanProgress(req.params.library);
+
+      return res.send({
+        ...state,
+      });
+    },
+  );
+
+  fastify.post(
+    '/media-sources/:id/libraries/:libraryId/refresh',
+    {
+      schema: {
+        tags: ['Media Source'],
+        params: BasicIdParamSchema.extend({
+          libraryId: z.string(),
+        }),
+        response: {
+          202: z.void(),
+          404: z.void(),
+          501: z.void(),
+        },
+      },
+    },
+    async (req, res) => {
+      const mediaSource = await req.serverCtx.mediaSourceDB.getById(
+        req.params.id,
+      );
+
+      if (!mediaSource) {
+        return res.status(404).send();
+      }
+
+      const all = req.params.libraryId === 'all';
+
+      const libraries = all
+        ? mediaSource.libraries.filter((lib) => lib.enabled)
+        : mediaSource.libraries.filter(
+            (lib) => lib.uuid === req.params.libraryId && lib.enabled,
+          );
+
+      if (!libraries || isEmpty(libraries)) {
+        return res.status(501);
+      }
+
+      for (const library of libraries) {
+        const scanner = match([mediaSource.type, library.mediaType] as const)
+          .with(['plex', 'movies'], () =>
+            container.get(PlexMediaSourceMovieScanner),
+          )
+          .with(['plex', 'shows'], () =>
+            container.get(PlexMediaSourceTvShowScanner),
+          )
+          .with(['jellyfin', 'movies'], () =>
+            container.get(JellyfinMediaSourceMovieScanner),
+          )
+          .with(['jellyfin', 'shows'], () =>
+            container.get(JellyfinMediaSourceTvShowScanner),
+          )
+          .otherwise(() => null);
+
+        if (!scanner) {
+          return res.status(504).send();
+        }
+
+        scanner
+          .scan({ library, force: true })
+          .catch((e) =>
+            logger.error(e, 'Error scanning library %s', library.uuid),
+          );
+      }
+
+      return res.status(202).send();
     },
   );
 

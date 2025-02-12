@@ -19,6 +19,8 @@ import { BackupTask } from './BackupTask.ts';
 import { SaveJellyfinProgramExternalIdsTask } from './jellyfin/SaveJellyfinProgramExternalIdsTask.ts';
 import type { SavePlexProgramExternalIdsTaskFactory } from './plex/SavePlexProgramExternalIdsTask.ts';
 import { SavePlexProgramExternalIdsTask } from './plex/SavePlexProgramExternalIdsTask.ts';
+import { RefreshMediaSourceLibraryTask } from './RefreshMediaSourceLibraryTask.ts';
+import type { Task } from './Task.ts';
 
 const TasksModule = new ContainerModule((bind) => {
   bind(UpdateXmlTvTask).toSelf();
@@ -89,6 +91,10 @@ const TasksModule = new ContainerModule((bind) => {
     (ctx) => (conf) => () =>
       new BackupTask(conf, ctx.container.get(ArchiveDatabaseBackupKey)),
   );
+
+  bind<RefreshMediaSourceLibraryTask>(RefreshMediaSourceLibraryTask).toSelf();
+
+  bind<Task>(KEYS.StartupTasks).toService(RefreshMediaSourceLibraryTask);
 });
 
 export { TasksModule };

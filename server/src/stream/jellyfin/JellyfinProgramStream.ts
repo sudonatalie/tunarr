@@ -51,7 +51,7 @@ export class JellyfinProgramStream extends ProgramStream {
   async setupInternal(): Promise<Result<FfmpegTranscodeSession>> {
     const lineupItem = this.context.lineupItem;
     if (!isContentBackedLineupIteam(lineupItem)) {
-      return Result.failure(
+      return Result.forError(
         new Error(
           'Lineup item is not backed by a media source: ' +
             JSON.stringify(lineupItem),
@@ -65,7 +65,7 @@ export class JellyfinProgramStream extends ProgramStream {
     );
 
     if (isNil(server)) {
-      return Result.failure(
+      return Result.forError(
         new Error(
           `Unable to find server "${lineupItem.externalSourceId}" specified by program.`,
         ),
@@ -83,13 +83,13 @@ export class JellyfinProgramStream extends ProgramStream {
 
     const stream = await jellyfinStreamDetails.getStream(server, lineupItem);
     if (isNull(stream)) {
-      return Result.failure(
+      return Result.forError(
         new Error('Unable to retrieve stream details from Jellyfin'),
       );
     }
 
     if (this.killed) {
-      return Result.failure(new Error('Stream was killed already, returning'));
+      return Result.forError(new Error('Stream was killed already, returning'));
     }
 
     const streamStats = stream.streamDetails;
@@ -117,7 +117,7 @@ export class JellyfinProgramStream extends ProgramStream {
     });
 
     if (isUndefined(ffmpegOutStream)) {
-      return Result.failure(new Error('Unable to spawn ffmpeg'));
+      return Result.forError(new Error('Unable to spawn ffmpeg'));
     }
 
     return Result.success(ffmpegOutStream);

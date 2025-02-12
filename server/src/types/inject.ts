@@ -17,6 +17,8 @@ const KEYS = {
   ProgramDB: Symbol.for('ProgramDB'),
   SettingsDB: Symbol.for('SettingsDB'),
   MediaSourceApiFactory: Symbol.for('MediaSourceApiFactory'),
+  MediaSourceLibraryRefresher: Symbol.for('MediaSourceLibraryRefresher'),
+  ProgramDaoMinterFactory: Symbol.for('ProgramDaoMinterFactory'),
 
   // Streaming
   HlsSession: Symbol.for('HlsSession'),
@@ -33,14 +35,17 @@ const KEYS = {
   FFmpegFactory: Symbol.for('FFmpegFactory'),
   ConcatStreamFactory: Symbol.for('ConcatStreamFactory'),
   PipelineBuilderFactory: Symbol.for('PipelineBuilderFactory'),
-
   UpdateXmlTvTaskFactory: Symbol.for('Factory<UpdateXmlTvTask>'),
 
   // Services
   HealthCheck: Symbol.for('HealthCheck'),
   Fixer: Symbol.for('Fixer'),
-
+  PlexCanonicalizer: Symbol.for('PlexCanonicalizer'),
+  JellyfinCanonicalizer: Symbol.for('JellyfinCanonicalizer'),
   ContentSourceUpdateFactory: Symbol.for('ContentSourceUpdateFactory'),
+
+  // Tasks
+  StartupTasks: Symbol.for('StartupTasks'),
 };
 
 export type LoggerFactory = (args: GetChildLoggerArgs) => Logger;

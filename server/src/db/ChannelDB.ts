@@ -87,8 +87,6 @@ import {
 } from './interfaces/IChannelDB.ts';
 import { SchemaBackedDbAdapter } from './json/SchemaBackedJsonDBAdapter.ts';
 import {
-  AllProgramGroupingFields,
-  MinimalProgramGroupingFields,
   withFallbackPrograms,
   withPrograms,
   withTrackAlbum,
@@ -104,6 +102,10 @@ import {
   Channel as RawChannel,
 } from './schema/Channel.ts';
 import { programExternalIdString } from './schema/Program.ts';
+import {
+  AllProgramGroupingFields,
+  MinimalProgramGroupingFields,
+} from './schema/ProgramGrouping.ts';
 import { ChannelTranscodingSettings } from './schema/base.ts';
 import type {
   ChannelWithRelations,

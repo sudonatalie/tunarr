@@ -10,6 +10,7 @@ import {
 import {
   FfmpegSettingsSchema,
   HdhrSettingsSchema,
+  MediaSourceLibrarySchema,
   MediaSourceSettingsSchema,
   PlexStreamSettingsSchema,
   TranscodeConfigSchema,
@@ -56,6 +57,71 @@ const deleteMediaSourceEndpoint = makeEndpoint({
     .build(),
   alias: 'deleteMediaSource',
   response: z.void(),
+});
+
+const getMediaLibraries = makeEndpoint({
+  method: 'get',
+  path: '/api/media-sources/:mediaSourceId/libraries',
+  parameters: parametersBuilder()
+    .addPaths({
+      mediaSourceId: z.string(),
+    })
+    .build(),
+  alias: 'getMediaLibraries',
+  response: z.array(MediaSourceLibrarySchema),
+});
+
+const updateMediaLibraryEndpoint = makeEndpoint({
+  method: 'put',
+  path: '/api/media-sources/:mediaSourceId/libraries/:libraryId',
+  parameters: parametersBuilder()
+    .addPaths({
+      mediaSourceId: z.string(),
+      libraryId: z.string(),
+    })
+    .addBody(
+      z.object({
+        enabled: z.boolean(),
+      }),
+    )
+    .build(),
+  alias: 'updateMediaLibrary',
+  response: MediaSourceLibrarySchema,
+});
+
+const refreshAllMediaSourceLibraries = makeEndpoint({
+  method: 'post',
+  path: '/api/media-sources/:mediaSourceId/libraries/all/refresh',
+  parameters: parametersBuilder()
+    .addPaths({
+      mediaSourceId: z.string(),
+    })
+    .build(),
+  alias: 'refreshMediaLibraries',
+  status: 202,
+  response: z.void(),
+});
+
+const refreshMediaSourceLibrary = makeEndpoint({
+  method: 'post',
+  path: '/api/media-sources/:mediaSourceId/libraries/:libraryId/refresh',
+  parameters: parametersBuilder()
+    .addPaths({
+      mediaSourceId: z.string(),
+      libraryId: z.string(),
+    })
+    .build(),
+  alias: 'refreshMediaLibrary',
+  status: 202,
+  response: z.void(),
+});
+
+const libraryStatusEndpoint = makeEndpoint({
+  method: 'get',
+  path: '/api/media-libraries/:libraryId/status',
+  parameters: parametersBuilder().addPath('libraryId', z.string()).build(),
+  alias: 'getLibraryStatus',
+  response: z.any(),
 });
 
 const getXmlTvSettings = makeEndpoint({
@@ -303,4 +369,9 @@ export const endpoints = [
   duplicateTranscodeConfig,
   vainfoDebugEndpoint,
   nvidiaDebugEndpoint,
+  getMediaLibraries,
+  updateMediaLibraryEndpoint,
+  refreshAllMediaSourceLibraries,
+  refreshMediaSourceLibrary,
+  libraryStatusEndpoint,
 ] as const;

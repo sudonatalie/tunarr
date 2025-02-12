@@ -28,6 +28,9 @@ import type { DeepPartial } from 'ts-essentials';
 import { SettingsDBFactory } from './db/SettingsDBFactory.ts';
 import { MediaSourceApiFactory } from './external/MediaSourceApiFactory.ts';
 import { FfmpegPipelineBuilderModule } from './ffmpeg/builder/pipeline/PipelineBuilderFactory.ts';
+import { EntityMutex } from './services/EntityMutex.ts';
+import { MediaSourceLibraryRefresher } from './services/MediaSourceLibraryRefresher.js';
+import { ServicesModule } from './services/ServicesModule.ts';
 import { SystemDevicesService } from './services/SystemDevicesService.ts';
 import { DynamicChannelsModule } from './services/dynamic_channels/DynamicChannelsModule.ts';
 import { Timer } from './util/Timer.ts';
@@ -74,6 +77,7 @@ const RootModule = new ContainerModule((bind) => {
   >(() => (timeout?: number) => new MutexMap(timeout));
 
   container.bind(MediaSourceApiFactory).toSelf().inSingletonScope();
+
   // If we need lazy init...
   // container
   //   .bind<MediaSourceApiFactory>(KEYS.MediaSourceApiFactory)
@@ -87,10 +91,17 @@ const RootModule = new ContainerModule((bind) => {
         ctx.container.get<MediaSourceApiFactory>(MediaSourceApiFactory),
     );
 
+  container
+    .bind<
+      interfaces.Factory<MediaSourceLibraryRefresher>
+    >(KEYS.MediaSourceLibraryRefresher)
+    .toAutoFactory(MediaSourceLibraryRefresher);
+
   bind(TVGuideService).toSelf().inSingletonScope();
   bind(EventService).toSelf().inSingletonScope();
   bind(HdhrService).toSelf().inSingletonScope();
   bind(SystemDevicesService).toSelf().inSingletonScope();
+  bind(EntityMutex).toSelf().inSingletonScope();
 });
 
 container.load(RootModule);
@@ -102,5 +113,6 @@ container.load(FixerModule);
 container.load(FFmpegModule);
 container.load(FfmpegPipelineBuilderModule);
 container.load(DynamicChannelsModule);
+container.load(ServicesModule);
 
 export { container };

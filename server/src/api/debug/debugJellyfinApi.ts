@@ -5,6 +5,7 @@ import type { RouterPluginAsyncCallback } from '@/types/serverType.js';
 import type { Nilable } from '@/types/util.js';
 import { isNil } from 'lodash-es';
 import { z } from 'zod';
+import { MediaSourceType } from '../../db/schema/MediaSource.ts';
 
 export const DebugJellyfinApiRouter: RouterPluginAsyncCallback = async (
   fastify,
@@ -86,6 +87,55 @@ export const DebugJellyfinApiRouter: RouterPluginAsyncCallback = async (
       const finder = container.get(JellyfinItemFinder);
       const match = await finder.findForProgramId(req.params.id);
       return res.status(match ? 200 : 404).send(match);
+    },
+  );
+
+  fastify.get(
+    '/jellyfin/:libraryId/enumerate',
+    {
+      schema: {
+        params: z.object({
+          libraryId: z.string(),
+        }),
+      },
+    },
+    async (req, res) => {
+      const library = await req.serverCtx.mediaSourceDB.getLibrary(
+        req.params.libraryId,
+      );
+      if (!library) {
+        return res.status(404).send();
+      }
+
+      if (library.mediaSource.type !== MediaSourceType.Jellyfin) {
+        return res.status(400).send();
+      }
+
+      const jfClient =
+        await req.serverCtx.mediaSourceApiFactory.getJellyfinApiClient(
+          library.mediaSource,
+        );
+
+      switch (library.mediaType) {
+        case 'movies':
+          for await (const movie of jfClient.getMovieLibraryContents(
+            library.externalKey,
+          )) {
+            console.log(movie);
+          }
+          break;
+        case 'shows': {
+          for await (const series of jfClient.getTvShowLibraryContents(
+            library.externalKey,
+          )) {
+            console.log(series);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+      return res.send();
     },
   );
 };
