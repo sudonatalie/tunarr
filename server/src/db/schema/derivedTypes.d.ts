@@ -4,12 +4,16 @@ import type { DeepNullable, MarkRequired, StrictOmit } from 'ts-essentials';
 import type { Channel, ChannelFillerShow } from './Channel.ts';
 import type { FillerShow } from './FillerShow.ts';
 import type { MediaSource, MediaSourceLibrary } from './MediaSource.ts';
-import type { NewProgramDao, ProgramDao } from './Program.ts';
+import type { NewProgramDao, ProgramDao, ProgramType } from './Program.ts';
 import type {
   MinimalProgramExternalId,
   NewSingleOrMultiExternalId,
 } from './ProgramExternalId.ts';
-import type { NewProgramGrouping, ProgramGrouping } from './ProgramGrouping.ts';
+import type {
+  NewProgramGrouping,
+  ProgramGrouping,
+  ProgramGroupingType,
+} from './ProgramGrouping.ts';
 import type {
   NewProgramGroupingExternalId,
   ProgramGroupingExternalId,
@@ -22,6 +26,37 @@ export type ProgramWithRelations = ProgramDao & {
   trackAlbum?: DeepNullable<Partial<ProgramGroupingWithExternalIds>> | null;
   // Require minimum data from externalId
   externalIds?: MinimalProgramExternalId[];
+};
+
+export type SpecificProgramGroupingType<Typ extends ProgramGroupingType> =
+  StrictOmit<ProgramGrouping, 'type'> & { type: Typ };
+
+export type SpecificProgramType<
+  Typ extends ProgramType,
+  ProgramT extends { type: ProgramType } = ProgramDao,
+> = StrictOmit<ProgramT, 'type'> & { type: Typ };
+
+export type MovieProgram = SpecificProgramType<'movie'> & {
+  externalIds: MinimalProgramExternalId[];
+};
+
+export type TvSeason = SpecificProgramGroupingType<'season'> & {
+  externalIds: ProgramGroupingExternalId[];
+};
+
+export type TvShow = SpecificProgramGroupingType<'show'> & {
+  externalIds: ProgramGroupingExternalId[];
+};
+
+export type EpisodeProgram = SpecificProgramType<'episode'> & {
+  tvSeason: TvSeason;
+  tvShow: TvShow;
+  externalIds: MinimalProgramExternalId[];
+};
+
+export type EpisodeProgramWithRelations = EpisodeProgram & {
+  tvShow: ProgramGroupingWithExternalIds;
+  tvSeason: ProgramGroupingWithExternalIds;
 };
 
 export type ChannelWithRelations = Channel & {
@@ -59,6 +94,17 @@ export type ProgramWithExternalIds = ProgramDao & {
 };
 
 export type NewProgramWithExternalIds = NewProgramDao & {
+  externalIds: NewSingleOrMultiExternalId[];
+};
+
+export type NewMovieProgram = SpecificProgramType<'movie', NewProgramDao> & {
+  externalIds: NewSingleOrMultiExternalId[];
+};
+
+export type NewEpisodeProgram = SpecificProgramType<
+  'episode',
+  NewProgramDao
+> & {
   externalIds: NewSingleOrMultiExternalId[];
 };
 

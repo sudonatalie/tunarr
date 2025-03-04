@@ -91,6 +91,12 @@ export class ProgramConverter {
     }
   }
 
+  convertProgramWithExternalIds(
+    program: MarkRequired<ProgramWithRelations, 'externalIds'>,
+  ): ContentProgram {
+    return this.programDaoToContentProgram(program, []);
+  }
+
   programDaoToContentProgram(
     program: ProgramWithRelations,
     externalIds: MinimalProgramExternalId[],
@@ -195,7 +201,9 @@ export class ProgramConverter {
       type: 'content',
       id: program.uuid,
       subtype: program.type,
-      externalIds: seq.collect(externalIds, (eid) => this.toExternalId(eid)),
+      externalIds: seq.collect(program.externalIds ?? externalIds, (eid) =>
+        this.toExternalId(eid),
+      ),
       externalKey: program.externalKey,
       externalSourceId: program.externalSourceId,
       externalSourceName: program.externalSourceId,

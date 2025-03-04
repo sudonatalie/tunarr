@@ -1,12 +1,15 @@
 import { head, round } from 'lodash-es';
+import type { ProgramConverter } from '../../db/converters/ProgramConverter.ts';
 import type { IProgramDB } from '../../db/interfaces/IProgramDB.ts';
 import type { MediaSourceDB } from '../../db/mediaSourceDB.ts';
-import type { NewProgramWithExternalIds } from '../../db/schema/derivedTypes.js';
+import type { NewMovieProgram } from '../../db/schema/derivedTypes.js';
 import type { MediaSourceType } from '../../db/schema/MediaSource.ts';
 import { ProgramType } from '../../db/schema/Program.ts';
+import { isMovieProgram } from '../../db/schema/schemaTypeGuards.ts';
 import { Result } from '../../types/result.ts';
 import type { Logger } from '../../util/logging/LoggerFactory.ts';
 import type { EntityMutex } from '../EntityMutex.ts';
+import type { MeilisearchService } from '../SearchService.ts';
 import type { MediaSourceProgressService } from './MediaSourceProgressService.ts';
 import type { ScanContext } from './MediaSourceScanner.ts';
 import { MediaSourceScanner } from './MediaSourceScanner.ts';
@@ -24,6 +27,8 @@ export abstract class MediaSourceMovieLibraryScanner<
     entityMutex: EntityMutex,
     protected programDB: IProgramDB,
     protected mediaSourceProgressService: MediaSourceProgressService,
+    private searchService: MeilisearchService,
+    protected programConverter: ProgramConverter,
   ) {
     super(logger, mediaSourceDB, entityMutex);
   }
@@ -76,7 +81,9 @@ export abstract class MediaSourceMovieLibraryScanner<
       const result = await this.scanMovie(context, movie).then((result) =>
         result.flatMapAsync((newMovie) => {
           return Result.attemptAsync(() =>
-            this.programDB.upsertPrograms([newMovie]),
+            this.programDB
+              .upsertPrograms([newMovie])
+              .then((_) => _.filter(isMovieProgram)),
           );
         }),
       );
@@ -92,18 +99,22 @@ export abstract class MediaSourceMovieLibraryScanner<
       }
 
       const dbMovie = head(result.get());
-      this.logger.debug(
-        'Upserted movie %s (ID = %s)',
-        dbMovie?.title,
-        dbMovie?.uuid,
-      );
+      if (dbMovie) {
+        this.logger.debug(
+          'Upserted movie %s (ID = %s)',
+          dbMovie?.title,
+          dbMovie?.uuid,
+        );
+
+        await this.searchService.indexMovie([dbMovie]);
+      }
     }
   }
 
   protected abstract scanMovie(
     context: ScanContext<ApiClientTypeT>,
     incomingMovie: MovieT,
-  ): Promise<Result<NewProgramWithExternalIds>>;
+  ): Promise<Result<NewMovieProgram>>;
 
   protected abstract getLibrarySize(
     libraryKey: string,

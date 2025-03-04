@@ -30,6 +30,7 @@ import { MediaSourceApiFactory } from './external/MediaSourceApiFactory.ts';
 import { FfmpegPipelineBuilderModule } from './ffmpeg/builder/pipeline/PipelineBuilderFactory.ts';
 import { EntityMutex } from './services/EntityMutex.ts';
 import { MediaSourceLibraryRefresher } from './services/MediaSourceLibraryRefresher.js';
+import { MeilisearchService } from './services/SearchService.ts';
 import { ServicesModule } from './services/ServicesModule.ts';
 import { SystemDevicesService } from './services/SystemDevicesService.ts';
 import { DynamicChannelsModule } from './services/dynamic_channels/DynamicChannelsModule.ts';
@@ -102,6 +103,8 @@ const RootModule = new ContainerModule((bind) => {
   bind(HdhrService).toSelf().inSingletonScope();
   bind(SystemDevicesService).toSelf().inSingletonScope();
   bind(EntityMutex).toSelf().inSingletonScope();
+  bind(MeilisearchService).toSelf().inSingletonScope();
+  bind(KEYS.SearchService).toService(MeilisearchService);
 });
 
 container.load(RootModule);

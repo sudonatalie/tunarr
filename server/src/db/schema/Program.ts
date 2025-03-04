@@ -12,7 +12,11 @@ import {
 import type { Insertable, Selectable, Updateable } from 'kysely';
 import type { MarkNotNilable } from '../../types/util.ts';
 import { type KyselifyBetter } from './KyselifyBetter.ts';
-import { MediaSourceLibrary, MediaSourceTypes } from './MediaSource.ts';
+import {
+  MediaSource,
+  MediaSourceLibrary,
+  MediaSourceTypes,
+} from './MediaSource.ts';
 import { ProgramGrouping } from './ProgramGrouping.ts';
 
 export const ProgramTypes = ['movie', 'episode', 'track'] as const;

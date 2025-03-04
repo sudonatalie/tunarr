@@ -45,7 +45,6 @@ import {
 } from './globals.js';
 import { ServerContext, ServerRequestContext } from './ServerContext.js';
 import { GlobalScheduler, scheduleJobs } from './services/Scheduler.ts';
-import { MeilisearchService } from './services/SearchService.ts';
 import { initPersistentStreamCache } from './stream/ChannelCache.js';
 import { Task } from './tasks/Task.ts';
 import { UpdateXmlTvTask } from './tasks/UpdateXmlTvTask.js';
@@ -90,7 +89,8 @@ export class Server {
     initializeSingletons(this.serverContext);
 
     this.logger.info('Starting Meilisearch service...');
-    await container.get(MeilisearchService).start();
+    await this.serverContext.searchService.start();
+    await this.serverContext.searchService.sync();
 
     await this.serverContext.m3uService.clearCache();
     await this.serverContext.channelLineupMigrator.run();

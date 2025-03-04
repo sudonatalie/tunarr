@@ -43,6 +43,7 @@ const KEYS = {
   PlexCanonicalizer: Symbol.for('PlexCanonicalizer'),
   JellyfinCanonicalizer: Symbol.for('JellyfinCanonicalizer'),
   ContentSourceUpdateFactory: Symbol.for('ContentSourceUpdateFactory'),
+  SearchService: Symbol.for('SearchService'),
 
   // Tasks
   StartupTasks: Symbol.for('StartupTasks'),

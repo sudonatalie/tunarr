@@ -1,16 +1,137 @@
+import { FindChild } from '@tunarr/types';
+import { ExternalIdType } from '@tunarr/types/schemas';
 import { Mutex } from 'async-mutex';
+import dayjs from 'dayjs';
 import { inject, injectable } from 'inversify';
-import { isNull, isString } from 'lodash-es';
-import { MeiliSearch } from 'meilisearch';
+import { isEmpty, isNull, isString } from 'lodash-es';
+import { EnqueuedTaskObject, MeiliSearch, Settings, Task } from 'meilisearch';
 import net from 'node:net';
 import path from 'node:path';
 import pm2 from 'pm2';
+import { EpisodeProgram, MovieProgram } from '../db/schema/derivedTypes.js';
+import { ProgramType } from '../db/schema/Program.ts';
+import { ProgramGroupingType } from '../db/schema/ProgramGrouping.ts';
 import { GlobalOptions } from '../globals.ts';
 import { KEYS } from '../types/inject.ts';
-import { isDefined } from '../util/index.ts';
+import { Path } from '../types/path.ts';
+import { Result } from '../types/result.ts';
+import { Nullable } from '../types/util.ts';
+import {
+  getBooleanEnvVar,
+  getEnvVar,
+  getNumericEnvVar,
+  TUNARR_ENV_VARS,
+} from '../util/env.ts';
+import { isDefined, wait } from '../util/index.ts';
 import { Logger } from '../util/logging/LoggerFactory.ts';
 
 export interface SearchService {}
+
+type FlattenArrayTypes<T> = {
+  [K in keyof T]: T[K] extends Array<unknown> ? T[K][0] : T[K];
+};
+
+interface BaseDocument {
+  id: string;
+}
+
+interface TunarrSearchIndex<Type extends BaseDocument> {
+  name: string;
+  primaryKey: string;
+  filterable: Path<FlattenArrayTypes<Type>>[];
+  sortable: Path<FlattenArrayTypes<Type>>[];
+}
+
+type GenericTunarrSearchIndex = {
+  name: string;
+  primaryKey: string;
+  filterable: string[];
+  sortable: string[];
+};
+
+const ProgramsIndex: TunarrSearchIndex<ProgramSearchDocument<ProgramType>> = {
+  name: 'programs',
+  primaryKey: 'id',
+  filterable: [
+    'duration',
+    'externalIds.source',
+    'externalIds.sourceId',
+    'externalIds.id',
+    'title',
+    'rating',
+    'originalReleaseDate',
+    'originalReleaseYear',
+    'externalIdsMerged',
+    'grandparent.id',
+    'parent.id',
+  ],
+  sortable: [
+    'title',
+    'duration',
+    'originalReleaseDate',
+    'originalReleaseYear',
+    'index',
+  ],
+};
+
+type ExternalIdSubDoc = {
+  id: string;
+  source: ExternalIdType;
+  sourceId?: string;
+};
+
+type MergedExternalId = `${ExternalIdType}|${string}|${string}`;
+type MergedGroupingExternalId<GroupingType extends ProgramGroupingType> =
+  `${GroupingType}_${MergedExternalId}`;
+
+type ProgramGroupingDenormDocument<GroupingType extends ProgramGroupingType> = {
+  id: string;
+  type: GroupingType;
+  title: string;
+  index?: number;
+  year?: number;
+  externalIds: ExternalIdSubDoc[];
+  externalIdsMerged: MergedGroupingExternalId<GroupingType>[];
+};
+
+type ProgramParentTypeLookup = [
+  [typeof ProgramType.Episode, typeof ProgramGroupingType.Season],
+  [typeof ProgramType.Track, typeof ProgramGroupingType.Album],
+  [typeof ProgramGroupingType.Season, typeof ProgramGroupingType.Show],
+  [typeof ProgramGroupingType.Album, typeof ProgramGroupingType.Artist],
+];
+
+type StringName = {
+  name: string;
+};
+
+type Actor = StringName;
+type Writer = StringName;
+type Director = StringName;
+
+type ProgramSearchDocument<Type extends ProgramType = ProgramType> = {
+  id: string;
+  type: Type;
+  externalIds: ExternalIdSubDoc[];
+  externalIdsMerged: MergedExternalId[];
+  duration: number;
+  title: string;
+  rating: Nullable<string>;
+  summary: Nullable<string>;
+  originalReleaseDate: Nullable<number>;
+  originalReleaseYear: Nullable<number>;
+  index?: number;
+  parent?: ProgramGroupingDenormDocument<
+    FindChild<Type, ProgramParentTypeLookup>
+  >;
+  grandparent?: ProgramGroupingDenormDocument<
+    FindChild<FindChild<Type, ProgramParentTypeLookup>, ProgramParentTypeLookup>
+  >;
+  genres: StringName[];
+  actors: Actor[];
+  writer: Writer[];
+  director: Director[];
+};
 
 @injectable()
 export class MeilisearchService implements SearchService {
@@ -26,21 +147,45 @@ export class MeilisearchService implements SearchService {
   ) {}
 
   async start() {
-    const client = await this.mutex.runExclusive(async () => {
+    return await this.mutex.runExclusive(async () => {
       if (this.started) {
         return this.client();
       }
 
-      this.port = await getAvailablePort();
+      this.port =
+        getNumericEnvVar(TUNARR_ENV_VARS.SEARCH_PORT) ??
+        (await getAvailablePort());
+
       this.proc = await new Promise((resolve, reject) => {
         pm2.connect((err) => {
           if (err) reject(err);
+
+          const args = [
+            '--http-addr',
+            `localhost:${this.port}`,
+            '--db-path',
+            `${this.dbPath}`,
+            '--no-analytics',
+          ];
+
+          const indexingRamSetting = getEnvVar(TUNARR_ENV_VARS.SEARCH_MAX_RAM);
+          if (indexingRamSetting) {
+            args.push('--max-indexing-memory', `${indexingRamSetting}`);
+          }
+
+          if (
+            getBooleanEnvVar(
+              TUNARR_ENV_VARS.DEBUG__REDUCE_SEARCH_INDEXING_MEMORY,
+            )
+          ) {
+            args.push('--experimental-reduce-indexing-memory-usage');
+          }
 
           pm2.start(
             {
               script: path.join(process.cwd(), '/bin/meilisearch'),
               name: 'meilisearch',
-              args: `--http-addr localhost:${this.port} --db-path ${this.dbPath}`,
+              args: args,
             },
             (err, proc) => {
               if (err) reject(err);
@@ -57,8 +202,6 @@ export class MeilisearchService implements SearchService {
 
       return this.client();
     });
-
-    this.logger.info('%O', await client?.getIndexes());
   }
 
   async stop() {
@@ -85,6 +228,161 @@ export class MeilisearchService implements SearchService {
     }
 
     return this.#client;
+  }
+
+  async sync() {
+    const existingIndexes = await this.client().getIndexes();
+
+    const processes: Promise<void>[] = [];
+
+    // Programs index
+    const existingProgramsIndex = existingIndexes.results.find(
+      (index) => index.uid === ProgramsIndex.name,
+    );
+
+    if (existingProgramsIndex) {
+      this.logger.debug(
+        'Programs index already exists. Ensuring it is up-to-date',
+      );
+
+      processes.push(this.syncIndexSettings(ProgramsIndex));
+    } else {
+      this.logger.debug('Creating programs index');
+      const task = await this.client().createIndex(ProgramsIndex.name, {
+        primaryKey: ProgramsIndex.primaryKey,
+      });
+
+      processes.push(
+        this.waitForTaskResult(task.taskUid).then(() =>
+          this.syncIndexSettings(ProgramsIndex),
+        ),
+      );
+    }
+
+    await Promise.all(processes);
+  }
+
+  async indexMovie(programs: MovieProgram[]) {
+    if (isEmpty(programs)) {
+      return;
+    }
+
+    await this.client()
+      .index<ProgramSearchDocument<'movie' | 'episode'>>(ProgramsIndex.name)
+      .addDocuments(
+        programs.map((p) => this.convertProgramToSearchDocument(p)),
+      );
+  }
+
+  private convertProgramToSearchDocument(
+    program: MovieProgram | EpisodeProgram,
+  ): ProgramSearchDocument<(typeof program)['type']> {
+    const validEids = program.externalIds.map((eid) => ({
+      id: eid.externalKey,
+      source: eid.sourceType,
+      sourceId: eid.mediaSourceId ?? undefined,
+    }));
+
+    const mergedExternalIds = validEids.map(
+      (eid) =>
+        `${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedExternalId,
+    );
+
+    const document: ProgramSearchDocument<typeof program.type> = {
+      id: program.uuid,
+      duration: program.duration,
+      externalIds: validEids,
+      externalIdsMerged: mergedExternalIds,
+      originalReleaseDate: Result.attempt(() => dayjs(program.originalAirDate))
+        .map((_) => _.valueOf())
+        .getOrElse(() => null),
+      originalReleaseYear: program.year,
+      rating: program.rating,
+      summary: program.summary,
+      title: program.title,
+      type: program.type,
+      index: program.episode ?? undefined,
+    };
+
+    if (program.type === 'episode') {
+      const seasonEids = program.tvSeason.externalIds.map((eid) => ({
+        id: eid.externalKey,
+        source: eid.sourceType,
+        sourceId: eid.mediaSourceId ?? undefined,
+      }));
+
+      const showEids = program.tvShow.externalIds.map((eid) => ({
+        id: eid.externalKey,
+        source: eid.sourceType,
+        sourceId: eid.mediaSourceId ?? undefined,
+      }));
+
+      document.parent = {
+        id: program.tvSeason.uuid,
+        externalIds: seasonEids,
+        type: program.tvSeason.type,
+        externalIdsMerged: seasonEids.map(
+          (eid) =>
+            `${program.tvSeason.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'season'>,
+        ),
+        title: program.tvSeason.title,
+        year: program.tvSeason.year ?? undefined,
+      } satisfies ProgramGroupingDenormDocument<
+        typeof ProgramGroupingType.Season
+      >;
+
+      document.grandparent = {
+        id: program.tvShow.uuid,
+        type: program.tvShow.type,
+        externalIds: showEids,
+        externalIdsMerged: showEids.map(
+          (eid) =>
+            `${program.tvShow.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'show'>,
+        ),
+        title: program.tvShow.title,
+        year: program.tvShow.year ?? undefined,
+      };
+    }
+
+    return document;
+  }
+
+  private async syncIndexSettings(index: GenericTunarrSearchIndex) {
+    const programsIndex = this.client().index(index.name);
+
+    const settings: Settings = {
+      filterableAttributes: index.filterable,
+      sortableAttributes: index.sortable,
+    };
+
+    const task = await programsIndex.updateSettings(settings);
+
+    return this.waitForTaskResult(task.taskUid);
+  }
+
+  private async waitForTaskResult(
+    taskId: number,
+    canceledIsOk: boolean = false,
+  ) {
+    let status: EnqueuedTaskObject['status'] = 'enqueued';
+    let task: Task;
+    do {
+      task = await this.client().getTask(taskId);
+      status = task.status;
+      await wait(500);
+    } while (
+      status !== 'canceled' &&
+      status !== 'failed' &&
+      status !== 'succeeded'
+    );
+
+    if (status === 'succeeded' || (canceledIsOk && status === 'canceled')) {
+      return;
+    }
+
+    throw new Error(
+      `Task ${taskId} ended with status ${status}: ${task.error?.code} ${task?.error?.message}`,
+    );
   }
 
   private get dbPath() {

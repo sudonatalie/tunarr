@@ -1,4 +1,4 @@
-import { isError, isString } from 'lodash-es';
+import { isError, isFunction, isString } from 'lodash-es';
 import { WrappedError } from './errors.ts';
 import { type Maybe } from './util.ts';
 
@@ -113,11 +113,11 @@ export abstract class Result<T, E extends WrappedError = WrappedError> {
     return this.isSuccess() ? (this._data! as Out) : v;
   }
 
-  getOrElse<U, Out = T extends U ? U : never>(f: () => Out): Out {
+  getOrElse<U, Out = T extends U ? U : never>(f: Out | (() => Out)): Out {
     if (this.isSuccess()) {
       return this._data! as Out;
     } else {
-      return f();
+      return isFunction(f) ? f() : f;
     }
   }
 

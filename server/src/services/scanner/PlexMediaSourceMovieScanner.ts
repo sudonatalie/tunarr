@@ -3,10 +3,10 @@ import { MediaSourceApiFactory } from '@/external/MediaSourceApiFactory.js';
 import { ScanContext } from '@/services/scanner/MediaSourceScanner.js';
 import { PlexMedia, PlexMovie } from '@tunarr/types/plex';
 import { inject, injectable, interfaces } from 'inversify';
-import { ProgramGroupingMinter } from '../../db/converters/ProgramGroupingMinter.ts';
+import { ProgramConverter } from '../../db/converters/ProgramConverter.ts';
 import { ProgramDaoMinter } from '../../db/converters/ProgramMinter.ts';
 import { type IProgramDB } from '../../db/interfaces/IProgramDB.ts';
-import { NewProgramWithExternalIds } from '../../db/schema/derivedTypes.js';
+import { NewMovieProgram } from '../../db/schema/derivedTypes.js';
 import {
   MediaSource,
   MediaSourceLibrary,
@@ -17,6 +17,7 @@ import { Result } from '../../types/result.ts';
 import { Logger } from '../../util/logging/LoggerFactory.ts';
 import { Canonicalizer } from '../Canonicalizer.ts';
 import { EntityMutex } from '../EntityMutex.ts';
+import { MeilisearchService } from '../SearchService.ts';
 import { MediaSourceMovieLibraryScanner } from './MediaSourceMovieLibraryScanner.ts';
 import { MediaSourceProgressService } from './MediaSourceProgressService.ts';
 
@@ -47,8 +48,8 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
     programMinterFactory: interfaces.AutoFactory<ProgramDaoMinter>,
     @inject(MediaSourceProgressService)
     mediaSourceProgressService: MediaSourceProgressService,
-    @inject(ProgramGroupingMinter)
-    private programGroupingMinter: ProgramGroupingMinter,
+    @inject(MeilisearchService) searchService: MeilisearchService,
+    @inject(ProgramConverter) programConverter: ProgramConverter,
   ) {
     super(
       logger,
@@ -56,6 +57,8 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
       entityMutex,
       programDB,
       mediaSourceProgressService,
+      searchService,
+      programConverter,
     );
     this.programMinter = programMinterFactory();
   }
@@ -83,7 +86,7 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
   protected async scanMovie(
     { apiClient, mediaSource, library }: ScanContext<PlexApiClient>,
     apiMovie: PlexMovie,
-  ): Promise<Result<NewProgramWithExternalIds>> {
+  ): Promise<Result<NewMovieProgram>> {
     const fullMetadataResult = await apiClient.getMovieMetadata(
       apiMovie.ratingKey,
     );
@@ -93,7 +96,7 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
     }
 
     return fullMetadataResult.map((fullMovie) => {
-      return this.programMinter.mint(mediaSource, library, {
+      return this.programMinter.mintMovie(mediaSource, library, {
         sourceType: 'plex',
         program: fullMovie,
       });

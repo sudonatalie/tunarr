@@ -21,6 +21,8 @@ import { find, first, head, isError } from 'lodash-es';
 import { P, match } from 'ts-pattern';
 import { v4 } from 'uuid';
 import { Canonicalizer } from '../../services/Canonicalizer.ts';
+import { SpecificEmbyType } from '../../types/EmbyTypes.ts';
+import { SpecificJellyfinType } from '../../types/JellyfinTypes.ts';
 import { KEYS } from '../../types/inject.ts';
 import { parsePlexGuid } from '../../util/externalIds.ts';
 import { MediaSource, MediaSourceLibrary } from '../schema/MediaSource.ts';
@@ -29,7 +31,25 @@ import type {
   NewProgramDao as NewRawProgram,
 } from '../schema/Program.ts';
 import { ProgramType } from '../schema/Program.ts';
-import { NewProgramWithExternalIds } from '../schema/derivedTypes.js';
+import {
+  NewEpisodeProgram,
+  NewMovieProgram,
+  NewProgramWithExternalIds,
+} from '../schema/derivedTypes.js';
+import {
+  isNewEpisodeProgram,
+  isNewMovieProgram,
+} from '../schema/schemaTypeGuards.ts';
+
+type MovieMintRequest =
+  | { sourceType: 'plex'; program: PlexMovie }
+  | { sourceType: 'jellyfin'; program: SpecificJellyfinType<'Movie'> }
+  | { sourceType: 'emby'; program: SpecificEmbyType<'Movie'> };
+
+type EpisodeMintRequest =
+  | { sourceType: 'plex'; program: PlexEpisode }
+  | { sourceType: 'jellyfin'; program: SpecificJellyfinType<'Episode'> }
+  | { sourceType: 'emby'; program: SpecificEmbyType<'Episode'> };
 
 /**
  * Generates Program DB entities for Plex media
@@ -72,6 +92,30 @@ export class ProgramDaoMinter {
       // Canonical ID can't be filled here...
       // canonicalId: this.plexProgramCanonicalizer.getCanonicalId(program)
     };
+  }
+
+  mintMovie(
+    mediaSource: MediaSource,
+    library: MediaSourceLibrary,
+    program: MovieMintRequest,
+  ): NewMovieProgram {
+    const dao = this.mint(mediaSource, library, program);
+    if (!isNewMovieProgram(dao)) {
+      throw new Error('Minted a non-movie program for a movie request');
+    }
+    return dao;
+  }
+
+  mintEpisode(
+    mediaSource: MediaSource,
+    library: MediaSourceLibrary,
+    program: EpisodeMintRequest,
+  ): NewEpisodeProgram {
+    const dao = this.mint(mediaSource, library, program);
+    if (!isNewEpisodeProgram(dao)) {
+      throw new Error('Minted a non-episode program for a episode request');
+    }
+    return dao;
   }
 
   mint(
