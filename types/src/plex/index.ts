@@ -233,6 +233,9 @@ export const PlexMediaVideoStreamSchema = BasePlexMediaStreamSchema.extend({
   scanType: z.string().optional(),
   anamorphic: z.string().or(z.boolean()).optional(),
   pixelAspectRatio: z.string().optional(),
+  language: z.string().optional(),
+  languageTag: z.string().optional(),
+  languageCode: z.string().optional(),
 });
 
 export type PlexMediaVideoStream = z.infer<typeof PlexMediaVideoStreamSchema>;

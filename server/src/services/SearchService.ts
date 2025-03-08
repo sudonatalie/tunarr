@@ -1,6 +1,7 @@
 import { FindChild } from '@tunarr/types';
 import { ExternalIdType } from '@tunarr/types/schemas';
 import { Mutex } from 'async-mutex';
+import retry from 'async-retry';
 import dayjs from 'dayjs';
 import { inject, injectable } from 'inversify';
 import { isEmpty, isNull, isString } from 'lodash-es';
@@ -8,11 +9,11 @@ import { EnqueuedTaskObject, MeiliSearch, Settings, Task } from 'meilisearch';
 import net from 'node:net';
 import path from 'node:path';
 import pm2 from 'pm2';
-import { EpisodeProgram, MovieProgram } from '../db/schema/derivedTypes.js';
 import { ProgramType } from '../db/schema/Program.ts';
 import { ProgramGroupingType } from '../db/schema/ProgramGrouping.ts';
 import { GlobalOptions } from '../globals.ts';
 import { KEYS } from '../types/inject.ts';
+import { Episode, Movie, Persisted } from '../types/Media.js';
 import { Path } from '../types/path.ts';
 import { Result } from '../types/result.ts';
 import { Nullable } from '../types/util.ts';
@@ -200,7 +201,10 @@ export class MeilisearchService implements SearchService {
 
       this.started = true;
 
-      return this.client();
+      const client = this.client();
+      await retry(async () => client.health());
+
+      return client;
     });
   }
 
@@ -262,7 +266,7 @@ export class MeilisearchService implements SearchService {
     await Promise.all(processes);
   }
 
-  async indexMovie(programs: MovieProgram[]) {
+  async indexMovie(programs: Persisted<Movie>[]) {
     if (isEmpty(programs)) {
       return;
     }
@@ -275,12 +279,12 @@ export class MeilisearchService implements SearchService {
   }
 
   private convertProgramToSearchDocument(
-    program: MovieProgram | EpisodeProgram,
+    program: Persisted<Movie> | Persisted<Episode>,
   ): ProgramSearchDocument<(typeof program)['type']> {
-    const validEids = program.externalIds.map((eid) => ({
-      id: eid.externalKey,
-      source: eid.sourceType,
-      sourceId: eid.mediaSourceId ?? undefined,
+    const validEids = program.identifiers.map((eid) => ({
+      id: eid.id,
+      source: eid.type,
+      sourceId: eid.sourceId ?? undefined,
     }));
 
     const mergedExternalIds = validEids.map(
@@ -290,57 +294,62 @@ export class MeilisearchService implements SearchService {
 
     const document: ProgramSearchDocument<typeof program.type> = {
       id: program.uuid,
-      duration: program.duration,
+      duration: +program.mediaItem.duration,
       externalIds: validEids,
       externalIdsMerged: mergedExternalIds,
-      originalReleaseDate: Result.attempt(() => dayjs(program.originalAirDate))
+      originalReleaseDate: Result.attempt(() => dayjs(program.releaseDate))
         .map((_) => _.valueOf())
         .getOrElse(() => null),
       originalReleaseYear: program.year,
-      rating: program.rating,
       summary: program.summary,
       title: program.title,
       type: program.type,
-      index: program.episode ?? undefined,
+      index: program.type === 'episode' ? program.episodeNumber : undefined,
+      rating:
+        program.type === 'movie' ? program.rating : program.season.show.rating,
+      genres: program.genres,
+      actors: program.actors,
+      director: program.directors,
+      writer: program.writers,
     };
 
     if (program.type === 'episode') {
-      const seasonEids = program.tvSeason.externalIds.map((eid) => ({
-        id: eid.externalKey,
-        source: eid.sourceType,
-        sourceId: eid.mediaSourceId ?? undefined,
+      const seasonEids = program.season.identifiers.map((eid) => ({
+        id: eid.id,
+        source: eid.type,
+        sourceId: eid.sourceId ?? undefined,
       }));
 
-      const showEids = program.tvShow.externalIds.map((eid) => ({
-        id: eid.externalKey,
-        source: eid.sourceType,
-        sourceId: eid.mediaSourceId ?? undefined,
+      const showEids = program.season.show.identifiers.map((eid) => ({
+        id: eid.id,
+        source: eid.type,
+        sourceId: eid.sourceId ?? undefined,
       }));
 
       document.parent = {
-        id: program.tvSeason.uuid,
+        id: program.season.uuid,
         externalIds: seasonEids,
-        type: program.tvSeason.type,
+        type: program.season.type,
         externalIdsMerged: seasonEids.map(
           (eid) =>
-            `${program.tvSeason.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'season'>,
+            `${program.season.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'season'>,
         ),
-        title: program.tvSeason.title,
-        year: program.tvSeason.year ?? undefined,
+        title: program.season.title,
+        year: program.season.year ?? undefined,
       } satisfies ProgramGroupingDenormDocument<
         typeof ProgramGroupingType.Season
       >;
 
       document.grandparent = {
-        id: program.tvShow.uuid,
-        type: program.tvShow.type,
+        id: program.season.show.uuid,
+        type: program.season.show.type,
         externalIds: showEids,
         externalIdsMerged: showEids.map(
           (eid) =>
-            `${program.tvShow.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'show'>,
+            `${program.season.show.type}_${eid.source}|${eid.sourceId ?? ''}|${eid.id}` satisfies MergedGroupingExternalId<'show'>,
         ),
-        title: program.tvShow.title,
-        year: program.tvShow.year ?? undefined,
+        title: program.season.show.title,
+        year: program.season.show.year ?? undefined,
       };
     }
 

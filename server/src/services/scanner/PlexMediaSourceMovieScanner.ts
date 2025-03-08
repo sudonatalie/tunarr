@@ -7,12 +7,13 @@ import { ProgramConverter } from '../../db/converters/ProgramConverter.ts';
 import { ProgramDaoMinter } from '../../db/converters/ProgramMinter.ts';
 import { type IProgramDB } from '../../db/interfaces/IProgramDB.ts';
 import { NewMovieProgram } from '../../db/schema/derivedTypes.js';
+import { MediaSource } from '../../db/schema/MediaSource.ts';
 import {
-  MediaSource,
-  MediaSourceLibrary,
-} from '../../db/schema/MediaSource.ts';
-import { PlexApiClient } from '../../external/plex/PlexApiClient.ts';
+  NormalizedPlexMovie,
+  PlexApiClient,
+} from '../../external/plex/PlexApiClient.ts';
 import { KEYS } from '../../types/inject.ts';
+import { Movie } from '../../types/Media.ts';
 import { Result } from '../../types/result.ts';
 import { Logger } from '../../util/logging/LoggerFactory.ts';
 import { Canonicalizer } from '../Canonicalizer.ts';
@@ -21,16 +22,11 @@ import { MeilisearchService } from '../SearchService.ts';
 import { MediaSourceMovieLibraryScanner } from './MediaSourceMovieLibraryScanner.ts';
 import { MediaSourceProgressService } from './MediaSourceProgressService.ts';
 
-type ScanRequest = {
-  library: MediaSourceLibrary;
-  force?: boolean;
-};
-
 @injectable()
 export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
   'plex',
   PlexApiClient,
-  PlexMovie
+  NormalizedPlexMovie
 > {
   readonly mediaSourceType = 'plex';
   private programMinter: ProgramDaoMinter;
@@ -79,7 +75,7 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
   protected getLibraryContents(
     libraryKey: string,
     context: ScanContext<PlexApiClient>,
-  ): AsyncIterable<PlexMovie> {
+  ): AsyncIterable<Movie> {
     return context.apiClient.getMovieLibraryContents(libraryKey);
   }
 
@@ -107,7 +103,7 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
     return this.canonicalizer.getCanonicalId(entity);
   }
 
-  protected getExternalKey(entity: PlexMovie): string {
-    return entity.ratingKey;
+  protected getExternalKey(entity: NormalizedPlexMovie): string {
+    return entity.plexId;
   }
 }

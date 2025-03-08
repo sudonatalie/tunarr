@@ -1,14 +1,19 @@
 import { type Maybe } from '@/types/util.js';
 import { getChannelId } from '@/util/channels.js';
-import { isSuccess } from '@/util/index.js';
+import { isDefined, isNonEmptyString, isSuccess } from '@/util/index.js';
 import { getTunarrVersion } from '@/util/version.js';
 import { PlexClientIdentifier } from '@tunarr/shared/constants';
+import { seq } from '@tunarr/shared/util';
 import type {
   PlexEpisode,
   PlexLibrarySections,
+  PlexMediaAudioStream,
   PlexMediaContainerMetadata,
   PlexMediaContainerResponse,
+  PlexMediaDescription,
+  PlexMediaVideoStream,
   PlexMovie,
+  PlexTerminalMedia,
   PlexTvSeason,
   PlexTvShow,
 } from '@tunarr/types/plex';
@@ -35,19 +40,26 @@ import {
 import dayjs from 'dayjs';
 import { XMLParser } from 'fast-xml-parser';
 import {
+  filter,
+  find,
   first,
   flatMap,
   forEach,
   isEmpty,
   isError,
+  isNil,
   isUndefined,
   map,
+  maxBy,
   reject,
+  sortBy,
 } from 'lodash-es';
 import type { z } from 'zod';
-import type { ProgramType } from '../../db/schema/Program.ts';
+import { ProgramType } from '../../db/schema/Program.js';
 import type { ProgramGroupingType } from '../../db/schema/ProgramGrouping.ts';
+import type { MediaItem, MediaStream, Movie } from '../../types/Media.js';
 import { Result } from '../../types/result.ts';
+import { parsePlexGuid } from '../../util/externalIds.ts';
 import type { ApiClientOptions } from '../BaseApiClient.js';
 import { QueryError, type QueryResult } from '../BaseApiClient.js';
 import { MediaSourceApiClient } from '../MediaSourceApiClient.ts';
@@ -62,8 +74,13 @@ const PlexHeaders = {
 };
 
 type PlexTypes = {
-  [ProgramType.Movie]: PlexMovie;
+  [ProgramType.Movie]: NormalizedPlexMovie;
   [ProgramGroupingType.Show]: PlexTvShow;
+};
+
+export type NormalizedPlexMovie = Movie & {
+  sourceType: 'plex';
+  plexId: string;
 };
 
 export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
@@ -158,15 +175,23 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
     return result.orUndefined();
   }
 
-  getMovieLibraryContents(
+  async *getMovieLibraryContents(
     libraryId: string,
     pageSize: number = 50,
-  ): AsyncIterable<PlexMovie> {
-    return this.getLibraryContents<PlexMovie>(
+  ): AsyncIterable<NormalizedPlexMovie> {
+    const it = this.getLibraryContents<PlexMovie>(
       libraryId,
       PlexMovieMediaContainerResponseSchema,
       pageSize,
     );
+    for await (const movie of it) {
+      const converted = plexMovieInjection(movie, this.opts.uuid!);
+      if (converted.isFailure()) {
+        this.logger.warn(converted.error, 'Failed to convert Plex API Movie');
+        continue;
+      }
+      yield converted.get();
+    }
   }
 
   getTvShowLibraryContents(
@@ -260,10 +285,10 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
     );
   }
 
-  private async getItemMetadataInternal<
-    ItemType,
-    SchemaType extends z.ZodType<PlexMetadataResponse<ItemType>>,
-  >(key: string, schema: SchemaType): Promise<QueryResult<ItemType>> {
+  private async getItemMetadataInternal<ItemType>(
+    key: string,
+    schema: z.ZodType<PlexMetadataResponse<ItemType>>,
+  ): Promise<QueryResult<ItemType>> {
     const responseResult = await this.doTypeCheckedGet(
       `/library/metadata/${key}`,
       schema,
@@ -301,10 +326,12 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
     return this.getItemMetadataInternal(key, PlexMediaContainerResponseSchema);
   }
 
-  async getMovieMetadata(key: string): Promise<QueryResult<PlexMovie>> {
+  async getMovieMetadata(key: string): Promise<Result<Movie>> {
     return this.getItemMetadataInternal(
       key,
       PlexMovieMediaContainerResponseSchema,
+    ).then((result) =>
+      result.flatMap((m) => plexMovieInjection(m, this.opts.uuid!)),
     );
   }
 
@@ -484,3 +511,222 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
 type PlexTvDevicesResponse = {
   MediaContainer: { Device: PlexResource[] };
 };
+
+function plexMovieInjection(
+  plexMovie: PlexMovie,
+  mediaSourceId: string,
+): Result<NormalizedPlexMovie> {
+  if (isNil(plexMovie.duration) || plexMovie.duration <= 0) {
+    return Result.forError(
+      new Error(`Plex movie ID = ${plexMovie.ratingKey} has invalid duration.`),
+    );
+  }
+
+  if (isNil(plexMovie.Media) || isEmpty(plexMovie.Media)) {
+    return Result.forError(
+      new Error(`Plex movie ID = ${plexMovie.ratingKey} has no Media streams`),
+    );
+  }
+
+  const actors = plexMovie.Role?.map(({ tag }) => ({ name: tag })) ?? [];
+  const directors = plexMovie.Director?.map(({ tag }) => ({ name: tag })) ?? [];
+  const writers = plexMovie.Writer?.map(({ tag }) => ({ name: tag })) ?? [];
+  const studios = isNonEmptyString(plexMovie.studio)
+    ? [{ name: plexMovie.studio }]
+    : [];
+
+  return Result.success({
+    type: ProgramType.Movie,
+    sourceType: 'plex',
+    plexId: plexMovie.ratingKey,
+    title: plexMovie.title,
+    originalTitle: null,
+    year: plexMovie.year ?? null,
+    releaseDate: plexMovie.originallyAvailableAt
+      ? dayjs(plexMovie.originallyAvailableAt)
+      : null,
+    mediaItem: plexMediaStreamsInject(
+      plexMovie.ratingKey,
+      plexMovie.Media,
+    ).getOrElse(() => emptyMediaItem(plexMovie)),
+    actors,
+    directors,
+    writers,
+    studios,
+    genres: plexMovie.Genre?.map(({ tag }) => ({ name: tag })) ?? [],
+    summary: plexMovie.summary ?? null,
+    plot: null,
+    tagline: plexMovie.tagline ?? null,
+    rating: plexMovie.rating?.toFixed() ?? null,
+    identifiers: [
+      {
+        id: plexMovie.ratingKey,
+        type: 'plex',
+        sourceId: mediaSourceId,
+      },
+      {
+        id: plexMovie.guid,
+        type: 'plex-guid',
+      },
+      ...seq.collect(plexMovie.Guid, (guid) => {
+        const parsed = parsePlexGuid(guid.id);
+        if (!parsed) return;
+        return {
+          id: parsed.externalKey,
+          type: parsed.sourceType,
+        };
+      }),
+    ],
+  });
+}
+
+function emptyMediaItem(item: PlexTerminalMedia): MediaItem {
+  const media = maxBy(
+    item.Media?.filter((m) => (m.Part?.length ?? 0) > 0),
+    (m) => m.id,
+  )!;
+  const part = media.Part[0];
+
+  return {
+    displayAspectRatio: '',
+    duration: dayjs.duration(part.duration!),
+    sampleAspectRatio: '',
+    streams: [],
+    resolution: { widthPx: media.width!, heightPx: media.height! },
+  };
+}
+
+function plexMediaStreamsInject(
+  itemId: string,
+  plexMedia: Maybe<PlexMediaDescription[]>,
+  requireVideoStream: boolean = true,
+): Result<MediaItem> {
+  if (isNil(plexMedia) || isEmpty(plexMedia)) {
+    return Result.forError(
+      new Error(`Plex item ID = ${itemId} has no Media streams`),
+    );
+  }
+
+  const relevantMedia = maxBy(
+    filter(
+      plexMedia,
+      (m) => (m.duration ?? 0) >= 0 && (m.Part?.length ?? 0) > 0,
+    ),
+    (m) => m.id,
+  );
+
+  if (!relevantMedia) {
+    return Result.forError(
+      new Error(
+        `No Media items on Plex item ID = ${itemId} meet the necessary criteria.`,
+      ),
+    );
+  }
+
+  const relevantMediaPart = first(relevantMedia?.Part);
+  const apiMediaStreams = relevantMediaPart?.Stream;
+
+  if (isUndefined(apiMediaStreams)) {
+    return Result.forError(
+      new Error(`Could not extract a stream for Plex item ID ${itemId}`),
+    );
+  }
+
+  const videoStream = find(
+    apiMediaStreams,
+    (stream): stream is PlexMediaVideoStream => stream.streamType === 1,
+  );
+
+  if (requireVideoStream && !videoStream) {
+    return Result.forError(
+      new Error(`Plex item ID = ${itemId} has no video streams`),
+    );
+  }
+
+  const streams: MediaStream[] = [];
+  if (videoStream) {
+    const videoDetails = {
+      // sampleAspectRatio: isNonEmptyString(videoStream?.pixelAspectRatio)
+      //   ? videoStream.pixelAspectRatio
+      //   : '1:1',
+      // scanType:
+      //   videoStream.scanType === 'interlaced'
+      //     ? 'interlaced'
+      //     : videoStream.scanType === 'progressive'
+      //     ? 'progressive'
+      //     : 'unknown',
+      // width: videoStream.width,
+      // height: videoStream.height,
+      // frameRate: videoStream.frameRate,
+      // displayAspectRatio:
+      //   (relevantMedia?.aspectRatio ?? 0) === 0
+      //     ? ''
+      //     : round(relevantMedia?.aspectRatio ?? 0.0, 10).toFixed(),
+      // chapters
+      // anamorphic:
+      //   videoStream.anamorphic === '1' || videoStream.anamorphic === true,
+      streamType: 'video',
+      codec: videoStream.codec,
+      bitDepth: videoStream.bitDepth ?? 8,
+      languageCodeISO6392: videoStream.languageCode,
+      default: videoStream.default,
+      // bitrate: videoStream.bitrate,
+      profile: videoStream.profile?.toLowerCase() ?? '',
+      index: videoStream.index,
+      // streamIndex: videoStream.index?.toString() ?? '0',
+    } satisfies MediaStream;
+    streams.push(videoDetails);
+  }
+
+  streams.push(
+    ...map(
+      sortBy(
+        filter(apiMediaStreams, (stream): stream is PlexMediaAudioStream => {
+          return stream.streamType === 2 && !isNil(stream.index);
+        }),
+        (stream) => [
+          stream.selected ? -1 : 0,
+          stream.default ? 0 : 1,
+          stream.index,
+        ],
+      ),
+      (audioStream) => {
+        return {
+          streamType: 'audio',
+          // bitrate: audioStream.bitrate,
+          channels: audioStream.channels,
+          codec: audioStream.codec,
+          index: audioStream.index,
+          // Use the "selected" bit over the "default" if it exists
+          // In plex, selected signifies that the user's preferences would choose
+          // this stream over others, even if it is not the default
+          // This is temporary until we have language preferences within Tunarr
+          // to pick these streams.
+          profile: audioStream.profile?.toLocaleLowerCase() ?? '',
+          selected: audioStream.selected,
+          default: audioStream.default,
+          languageCodeISO6392: audioStream.languageCode,
+          title: audioStream.displayTitle,
+        } satisfies MediaStream;
+      },
+    ),
+  );
+
+  return Result.success({
+    // Handle if this is not present...
+    duration: dayjs.duration(relevantMedia.duration!),
+    sampleAspectRatio: isNonEmptyString(videoStream?.pixelAspectRatio)
+      ? videoStream.pixelAspectRatio
+      : '1:1',
+    displayAspectRatio:
+      (relevantMedia.aspectRatio ?? 0) === 0
+        ? ''
+        : (relevantMedia.aspectRatio?.toFixed(2) ?? ''),
+    resolution:
+      isDefined(relevantMedia.width) && isDefined(relevantMedia.height)
+        ? { widthPx: relevantMedia.width, heightPx: relevantMedia.height }
+        : undefined,
+    frameRate: videoStream?.frameRate?.toFixed(2),
+    streams,
+  });
+}

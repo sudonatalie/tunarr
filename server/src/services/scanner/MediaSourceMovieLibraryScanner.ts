@@ -6,6 +6,7 @@ import type { NewMovieProgram } from '../../db/schema/derivedTypes.js';
 import type { MediaSourceType } from '../../db/schema/MediaSource.ts';
 import { ProgramType } from '../../db/schema/Program.ts';
 import { isMovieProgram } from '../../db/schema/schemaTypeGuards.ts';
+import type { Movie } from '../../types/Media.ts';
 import { Result } from '../../types/result.ts';
 import type { Logger } from '../../util/logging/LoggerFactory.ts';
 import type { EntityMutex } from '../EntityMutex.ts';
@@ -17,7 +18,7 @@ import { MediaSourceScanner } from './MediaSourceScanner.ts';
 export abstract class MediaSourceMovieLibraryScanner<
   MediaSourceTypeT extends MediaSourceType,
   ApiClientTypeT,
-  MovieT,
+  MovieT = Movie,
 > extends MediaSourceScanner<'movies', MediaSourceTypeT, ApiClientTypeT> {
   readonly type = 'movies';
 
