@@ -8,13 +8,17 @@ import { seq } from '@tunarr/shared/util';
 import type { ContentProgram } from '@tunarr/types';
 import type { JellyfinItem } from '@tunarr/types/jellyfin';
 import type {
+  PlexMovie as ApiPlexMovie,
   PlexEpisode,
   PlexMedia,
-  PlexMovie,
   PlexMusicTrack,
   PlexTerminalMedia,
 } from '@tunarr/types/plex';
-import type { ContentProgramOriginalProgram } from '@tunarr/types/schemas';
+import {
+  isValidMultiExternalIdType,
+  isValidSingleExternalIdType,
+  type ContentProgramOriginalProgram,
+} from '@tunarr/types/schemas';
 import dayjs from 'dayjs';
 import { inject, injectable } from 'inversify';
 import { find, first, head, isError } from 'lodash-es';
@@ -23,8 +27,10 @@ import { v4 } from 'uuid';
 import { Canonicalizer } from '../../services/Canonicalizer.ts';
 import { SpecificEmbyType } from '../../types/EmbyTypes.ts';
 import { SpecificJellyfinType } from '../../types/JellyfinTypes.ts';
+import { MediaSourceMovie, PlexMovie } from '../../types/Media.ts';
 import { KEYS } from '../../types/inject.ts';
 import { parsePlexGuid } from '../../util/externalIds.ts';
+import { isNonEmptyString } from '../../util/index.ts';
 import { MediaSource, MediaSourceLibrary } from '../schema/MediaSource.ts';
 import type {
   NewProgramDao,
@@ -170,10 +176,72 @@ export class ProgramDaoMinter {
     return ret;
   }
 
+  mintMovie2(
+    mediaSource: MediaSource,
+    mediaLibrary: MediaSourceLibrary,
+    movie: MediaSourceMovie,
+  ): NewMovieProgram {
+    const programId = v4();
+    const now = +dayjs();
+    
+    return {
+      uuid: programId,
+      sourceType: movie.sourceType,
+      externalKey: movie.externalKey,
+      originalAirDate: movie.releaseDate?.format(),
+      duration: +movie.mediaItem.duration,
+      // filePath: file?.file ?? null,
+      externalSourceId: mediaSource.name,
+      mediaSourceId: mediaSource.uuid,
+      libraryId: mediaLibrary.uuid,
+      // plexRatingKey: plexMovie.ratingKey,
+      // plexFilePath: file?.key ?? null,
+      rating: movie.rating,
+      summary: movie.summary,
+      title: movie.title,
+      type: ProgramType.Movie,
+      year: movie.year,
+      createdAt: now,
+      updatedAt: now,
+      canonicalId: movie.canonicalId,
+      externalIds: seq.collect(movie.identifiers, (id) => {
+        if (isNonEmptyString(id.id) && isValidSingleExternalIdType(id.type)) {
+          return {
+            type: 'single',
+            externalKey: id.id,
+            programUuid: programId,
+            sourceType: id.type,
+            uuid: v4(),
+            createdAt: now,
+            updatedAt: now,
+          } satisfies NewSingleOrMultiExternalId;
+        } else if (isValidMultiExternalIdType(id.type)) {
+          const isMediaSourceId = id.type === mediaSource.type;
+          return {
+            type: 'multi',
+            externalKey: id.id,
+            programUuid: programId,
+            sourceType: id.type,
+            uuid: v4(),
+            createdAt: now,
+            updatedAt: now,
+            externalSourceId: mediaSource.name, // legacy
+            mediaSourceId: mediaSource.uuid, // new
+            // TODO
+            directFilePath: isMediaSourceId ? 
+            // externalFilePath
+          } satisfies NewSingleOrMultiExternalId;
+        }
+
+        return;
+      }),
+    };
+  }
+
   private mintProgramForPlexMovie(
     mediaSource: MediaSource,
     mediaLibrary: MediaSourceLibrary,
-    plexMovie: PlexMovie,
+    plexMovie: ApiPlexMovie,
   ): NewProgramDao {
     const file = first(first(plexMovie.Media)?.Part ?? []);
     return {

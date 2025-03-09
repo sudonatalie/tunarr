@@ -3,6 +3,7 @@ import type { ExternalIdType } from '@tunarr/types/schemas';
 import type dayjs from 'dayjs';
 import type { Duration } from 'dayjs/plugin/duration.js';
 import type { MarkRequired } from 'ts-essentials';
+import type { MediaSourceType } from '../db/schema/MediaSource.ts';
 import type { ProgramType } from '../db/schema/Program.ts';
 import type { ProgramGroupingType } from '../db/schema/ProgramGrouping.ts';
 import type { Nullable } from './util.ts';
@@ -46,6 +47,22 @@ export interface MediaStream {
   selected?: boolean;
 }
 
+interface BaseMediaLocationn {
+  path: string;
+}
+
+export interface LocalMediaLocation extends BaseMediaLocationn {
+  type: 'local';
+}
+
+export interface MediaSourceMediaLocation extends BaseMediaLocationn {
+  type: 'remote';
+  sourceType: MediaSourceType;
+  externalKey: string;
+}
+
+export type MediaLocation = LocalMediaLocation | MediaSourceMediaLocation;
+
 export type MediaItem = {
   streams: MediaStream[];
   duration: Duration;
@@ -56,6 +73,7 @@ export type MediaItem = {
   resolution?: Resolution;
   // width: number;
   // height: number;
+  locations: MediaLocation[];
 };
 
 interface ItemBase {
@@ -135,6 +153,18 @@ export type Persisted<ProgramT extends ItemBase> = MarkRequired<
     : ProgramT[Key];
 };
 
-// export type Persisted<ProgramT extends ItemBase> =
-//   ProgramT extends Movie | Show | Season ? MarkRequired<ProgramT, 'uuid'> :
-//     ProgramT extends Episode
+export type AnyProgram = Movie | Episode;
+
+export type HasMediaSourceInfo = {
+  sourceType: MediaSourceType;
+  externalKey: string;
+};
+
+export type MediaSourceProgram = AnyProgram & HasMediaSourceInfo;
+
+export type MediaSourceMovie = Movie & HasMediaSourceInfo;
+
+export interface PlexMovie extends Movie {
+  sourceType: 'plex';
+  externalKey: string;
+}

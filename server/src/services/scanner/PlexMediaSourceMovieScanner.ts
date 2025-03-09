@@ -1,19 +1,16 @@
 import { MediaSourceDB } from '@/db/mediaSourceDB.js';
 import { MediaSourceApiFactory } from '@/external/MediaSourceApiFactory.js';
 import { ScanContext } from '@/services/scanner/MediaSourceScanner.js';
-import { PlexMedia, PlexMovie } from '@tunarr/types/plex';
+import { PlexMedia } from '@tunarr/types/plex';
 import { inject, injectable, interfaces } from 'inversify';
 import { ProgramConverter } from '../../db/converters/ProgramConverter.ts';
 import { ProgramDaoMinter } from '../../db/converters/ProgramMinter.ts';
 import { type IProgramDB } from '../../db/interfaces/IProgramDB.ts';
 import { NewMovieProgram } from '../../db/schema/derivedTypes.js';
 import { MediaSource } from '../../db/schema/MediaSource.ts';
-import {
-  NormalizedPlexMovie,
-  PlexApiClient,
-} from '../../external/plex/PlexApiClient.ts';
+import { PlexApiClient } from '../../external/plex/PlexApiClient.ts';
 import { KEYS } from '../../types/inject.ts';
-import { Movie } from '../../types/Media.ts';
+import { PlexMovie } from '../../types/Media.ts';
 import { Result } from '../../types/result.ts';
 import { Logger } from '../../util/logging/LoggerFactory.ts';
 import { Canonicalizer } from '../Canonicalizer.ts';
@@ -26,7 +23,7 @@ import { MediaSourceProgressService } from './MediaSourceProgressService.ts';
 export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
   'plex',
   PlexApiClient,
-  NormalizedPlexMovie
+  PlexMovie
 > {
   readonly mediaSourceType = 'plex';
   private programMinter: ProgramDaoMinter;
@@ -75,16 +72,16 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
   protected getLibraryContents(
     libraryKey: string,
     context: ScanContext<PlexApiClient>,
-  ): AsyncIterable<Movie> {
+  ): AsyncIterable<PlexMovie> {
     return context.apiClient.getMovieLibraryContents(libraryKey);
   }
 
   protected async scanMovie(
     { apiClient, mediaSource, library }: ScanContext<PlexApiClient>,
-    apiMovie: PlexMovie,
+    incomingMovie: PlexMovie,
   ): Promise<Result<NewMovieProgram>> {
     const fullMetadataResult = await apiClient.getMovieMetadata(
-      apiMovie.ratingKey,
+      incomingMovie.externalKey,
     );
 
     if (fullMetadataResult.isFailure()) {
@@ -92,18 +89,16 @@ export class PlexMediaSourceMovieScanner extends MediaSourceMovieLibraryScanner<
     }
 
     return fullMetadataResult.map((fullMovie) => {
-      return this.programMinter.mintMovie(mediaSource, library, {
-        sourceType: 'plex',
-        program: fullMovie,
-      });
+      return this.programMinter.mintMovie2(mediaSource, library, fullMovie);
     });
   }
 
   protected getCanonicalId(entity: PlexMovie): string {
-    return this.canonicalizer.getCanonicalId(entity);
+    return entity.canonicalId;
+    // return this.canonicalizer.getCanonicalId(entity);
   }
 
-  protected getExternalKey(entity: NormalizedPlexMovie): string {
-    return entity.plexId;
+  protected getExternalKey(entity: PlexMovie): string {
+    return entity.externalKey;
   }
 }

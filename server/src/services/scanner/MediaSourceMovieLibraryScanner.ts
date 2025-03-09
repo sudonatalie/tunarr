@@ -18,7 +18,7 @@ import { MediaSourceScanner } from './MediaSourceScanner.ts';
 export abstract class MediaSourceMovieLibraryScanner<
   MediaSourceTypeT extends MediaSourceType,
   ApiClientTypeT,
-  MovieT = Movie,
+  MovieT extends Movie = Movie,
 > extends MediaSourceScanner<'movies', MediaSourceTypeT, ApiClientTypeT> {
   readonly type = 'movies';
 
@@ -107,7 +107,7 @@ export abstract class MediaSourceMovieLibraryScanner<
           dbMovie?.uuid,
         );
 
-        await this.searchService.indexMovie([dbMovie]);
+        await this.searchService.indexMovie([{ ...movie, uuid: dbMovie.uuid }]);
       }
     }
   }

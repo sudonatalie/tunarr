@@ -5,6 +5,7 @@ import { getTunarrVersion } from '@/util/version.js';
 import { PlexClientIdentifier } from '@tunarr/shared/constants';
 import { seq } from '@tunarr/shared/util';
 import type {
+  PlexMovie as ApiPlexMovie,
   PlexEpisode,
   PlexLibrarySections,
   PlexMediaAudioStream,
@@ -12,7 +13,6 @@ import type {
   PlexMediaContainerResponse,
   PlexMediaDescription,
   PlexMediaVideoStream,
-  PlexMovie,
   PlexTerminalMedia,
   PlexTvSeason,
   PlexTvShow,
@@ -55,9 +55,11 @@ import {
   sortBy,
 } from 'lodash-es';
 import type { z } from 'zod';
+import { MediaSourceType } from '../../db/schema/MediaSource.ts';
 import { ProgramType } from '../../db/schema/Program.js';
 import type { ProgramGroupingType } from '../../db/schema/ProgramGrouping.ts';
-import type { MediaItem, MediaStream, Movie } from '../../types/Media.js';
+import type { Canonicalizer } from '../../services/Canonicalizer.ts';
+import type { MediaItem, MediaStream, PlexMovie } from '../../types/Media.js';
 import { Result } from '../../types/result.ts';
 import { parsePlexGuid } from '../../util/externalIds.ts';
 import type { ApiClientOptions } from '../BaseApiClient.js';
@@ -74,21 +76,20 @@ const PlexHeaders = {
 };
 
 type PlexTypes = {
-  [ProgramType.Movie]: NormalizedPlexMovie;
+  [ProgramType.Movie]: PlexMovie;
   [ProgramGroupingType.Show]: PlexTvShow;
 };
 
-export type NormalizedPlexMovie = Movie & {
-  sourceType: 'plex';
-  plexId: string;
-};
+export type PlexApiClientFactory = (opts: ApiClientOptions) => PlexApiClient;
 
 export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
   protected redacter = new PlexRequestRedacter();
   private opts: ApiClientOptions;
-  private accessToken: string;
 
-  constructor(opts: ApiClientOptions) {
+  constructor(
+    private canonicalizer: Canonicalizer<PlexMedia>,
+    opts: ApiClientOptions,
+  ) {
     super({
       ...opts,
       extraHeaders: {
@@ -132,7 +133,7 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
         headers: config.headers,
       };
 
-      if (this.accessToken === '') {
+      if (this.opts.accessToken === '') {
         throw new Error(
           'No Plex token provided. Please use the SignIn method or provide a X-Plex-Token in the Plex constructor.',
         );
@@ -178,14 +179,14 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
   async *getMovieLibraryContents(
     libraryId: string,
     pageSize: number = 50,
-  ): AsyncIterable<NormalizedPlexMovie> {
-    const it = this.getLibraryContents<PlexMovie>(
+  ): AsyncIterable<PlexMovie> {
+    const it = this.getLibraryContents<ApiPlexMovie>(
       libraryId,
       PlexMovieMediaContainerResponseSchema,
       pageSize,
     );
     for await (const movie of it) {
-      const converted = plexMovieInjection(movie, this.opts.uuid!);
+      const converted = this.plexMovieInjection(movie, this.opts.uuid!);
       if (converted.isFailure()) {
         this.logger.warn(converted.error, 'Failed to convert Plex API Movie');
         continue;
@@ -326,12 +327,12 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
     return this.getItemMetadataInternal(key, PlexMediaContainerResponseSchema);
   }
 
-  async getMovieMetadata(key: string): Promise<Result<Movie>> {
+  async getMovieMetadata(key: string): Promise<Result<PlexMovie>> {
     return this.getItemMetadataInternal(
       key,
       PlexMovieMediaContainerResponseSchema,
     ).then((result) =>
-      result.flatMap((m) => plexMovieInjection(m, this.opts.uuid!)),
+      result.flatMap((m) => this.plexMovieInjection(m, this.opts.uuid!)),
     );
   }
 
@@ -470,7 +471,7 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
   protected override preRequestValidate<T>(
     req: AxiosRequestConfig,
   ): Maybe<QueryResult<T>> {
-    if (isEmpty(this.accessToken)) {
+    if (isEmpty(this.opts.accessToken)) {
       return Result.failure(
         QueryError.create(
           'no_access_token',
@@ -506,79 +507,85 @@ export class PlexApiClient extends MediaSourceApiClient<PlexTypes> {
     }
     return thumbUrl.toString();
   }
+
+  private plexMovieInjection(
+    plexMovie: ApiPlexMovie,
+    mediaSourceId: string,
+  ): Result<PlexMovie> {
+    if (isNil(plexMovie.duration) || plexMovie.duration <= 0) {
+      return Result.forError(
+        new Error(
+          `Plex movie ID = ${plexMovie.ratingKey} has invalid duration.`,
+        ),
+      );
+    }
+
+    if (isNil(plexMovie.Media) || isEmpty(plexMovie.Media)) {
+      return Result.forError(
+        new Error(
+          `Plex movie ID = ${plexMovie.ratingKey} has no Media streams`,
+        ),
+      );
+    }
+
+    const actors = plexMovie.Role?.map(({ tag }) => ({ name: tag })) ?? [];
+    const directors =
+      plexMovie.Director?.map(({ tag }) => ({ name: tag })) ?? [];
+    const writers = plexMovie.Writer?.map(({ tag }) => ({ name: tag })) ?? [];
+    const studios = isNonEmptyString(plexMovie.studio)
+      ? [{ name: plexMovie.studio }]
+      : [];
+
+    return Result.success({
+      type: ProgramType.Movie,
+      canonicalId: this.canonicalizer.getCanonicalId(plexMovie),
+      sourceType: MediaSourceType.Plex,
+      externalKey: plexMovie.ratingKey,
+      title: plexMovie.title,
+      originalTitle: null,
+      year: plexMovie.year ?? null,
+      releaseDate: plexMovie.originallyAvailableAt
+        ? dayjs(plexMovie.originallyAvailableAt)
+        : null,
+      mediaItem: plexMediaStreamsInject(
+        plexMovie.ratingKey,
+        plexMovie.Media,
+      ).getOrElse(() => emptyMediaItem(plexMovie)),
+      actors,
+      directors,
+      writers,
+      studios,
+      genres: plexMovie.Genre?.map(({ tag }) => ({ name: tag })) ?? [],
+      summary: plexMovie.summary ?? null,
+      plot: null,
+      tagline: plexMovie.tagline ?? null,
+      rating: plexMovie.rating?.toFixed() ?? null,
+      identifiers: [
+        {
+          id: plexMovie.ratingKey,
+          type: 'plex',
+          sourceId: mediaSourceId,
+        },
+        {
+          id: plexMovie.guid,
+          type: 'plex-guid',
+        },
+        ...seq.collect(plexMovie.Guid, (guid) => {
+          const parsed = parsePlexGuid(guid.id);
+          if (!parsed) return;
+          return {
+            id: parsed.externalKey,
+            type: parsed.sourceType,
+          };
+        }),
+      ],
+    });
+  }
 }
 
 type PlexTvDevicesResponse = {
   MediaContainer: { Device: PlexResource[] };
 };
-
-function plexMovieInjection(
-  plexMovie: PlexMovie,
-  mediaSourceId: string,
-): Result<NormalizedPlexMovie> {
-  if (isNil(plexMovie.duration) || plexMovie.duration <= 0) {
-    return Result.forError(
-      new Error(`Plex movie ID = ${plexMovie.ratingKey} has invalid duration.`),
-    );
-  }
-
-  if (isNil(plexMovie.Media) || isEmpty(plexMovie.Media)) {
-    return Result.forError(
-      new Error(`Plex movie ID = ${plexMovie.ratingKey} has no Media streams`),
-    );
-  }
-
-  const actors = plexMovie.Role?.map(({ tag }) => ({ name: tag })) ?? [];
-  const directors = plexMovie.Director?.map(({ tag }) => ({ name: tag })) ?? [];
-  const writers = plexMovie.Writer?.map(({ tag }) => ({ name: tag })) ?? [];
-  const studios = isNonEmptyString(plexMovie.studio)
-    ? [{ name: plexMovie.studio }]
-    : [];
-
-  return Result.success({
-    type: ProgramType.Movie,
-    sourceType: 'plex',
-    plexId: plexMovie.ratingKey,
-    title: plexMovie.title,
-    originalTitle: null,
-    year: plexMovie.year ?? null,
-    releaseDate: plexMovie.originallyAvailableAt
-      ? dayjs(plexMovie.originallyAvailableAt)
-      : null,
-    mediaItem: plexMediaStreamsInject(
-      plexMovie.ratingKey,
-      plexMovie.Media,
-    ).getOrElse(() => emptyMediaItem(plexMovie)),
-    actors,
-    directors,
-    writers,
-    studios,
-    genres: plexMovie.Genre?.map(({ tag }) => ({ name: tag })) ?? [],
-    summary: plexMovie.summary ?? null,
-    plot: null,
-    tagline: plexMovie.tagline ?? null,
-    rating: plexMovie.rating?.toFixed() ?? null,
-    identifiers: [
-      {
-        id: plexMovie.ratingKey,
-        type: 'plex',
-        sourceId: mediaSourceId,
-      },
-      {
-        id: plexMovie.guid,
-        type: 'plex-guid',
-      },
-      ...seq.collect(plexMovie.Guid, (guid) => {
-        const parsed = parsePlexGuid(guid.id);
-        if (!parsed) return;
-        return {
-          id: parsed.externalKey,
-          type: parsed.sourceType,
-        };
-      }),
-    ],
-  });
-}
 
 function emptyMediaItem(item: PlexTerminalMedia): MediaItem {
   const media = maxBy(
@@ -593,6 +600,14 @@ function emptyMediaItem(item: PlexTerminalMedia): MediaItem {
     sampleAspectRatio: '',
     streams: [],
     resolution: { widthPx: media.width!, heightPx: media.height! },
+    locations: [
+      {
+        externalKey: part.key,
+        path: part.file,
+        sourceType: MediaSourceType.Plex,
+        type: 'remote',
+      },
+    ],
   };
 }
 
@@ -626,7 +641,7 @@ function plexMediaStreamsInject(
   const relevantMediaPart = first(relevantMedia?.Part);
   const apiMediaStreams = relevantMediaPart?.Stream;
 
-  if (isUndefined(apiMediaStreams)) {
+  if (!relevantMediaPart || !apiMediaStreams) {
     return Result.forError(
       new Error(`Could not extract a stream for Plex item ID ${itemId}`),
     );
@@ -728,5 +743,13 @@ function plexMediaStreamsInject(
         : undefined,
     frameRate: videoStream?.frameRate?.toFixed(2),
     streams,
+    locations: [
+      {
+        type: 'remote',
+        externalKey: relevantMediaPart.key,
+        path: relevantMediaPart.file,
+        sourceType: MediaSourceType.Plex,
+      },
+    ],
   });
 }

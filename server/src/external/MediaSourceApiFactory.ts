@@ -16,7 +16,7 @@ import type { ApiClientOptions, BaseApiClient } from './BaseApiClient.js';
 import { EmbyApiClient, EmbyApiClientOptions } from './emby/EmbyApiClient.ts';
 import type { JellyfinApiClientOptions } from './jellyfin/JellyfinApiClient.js';
 import { JellyfinApiClient } from './jellyfin/JellyfinApiClient.js';
-import { PlexApiClient } from './plex/PlexApiClient.js';
+import { PlexApiClient, PlexApiClientFactory } from './plex/PlexApiClient.js';
 
 type TypeToClient = [
   [typeof MediaSourceType.Plex, PlexApiClient],
@@ -40,6 +40,8 @@ export class MediaSourceApiFactory {
     @inject(new LazyServiceIdentifier(() => MediaSourceDB))
     private mediaSourceDB: MediaSourceDB,
     @inject(KEYS.SettingsDB) private settings: ISettingsDB,
+    @inject(KEYS.PlexApiClientFactory)
+    private plexApiClientFactory: PlexApiClientFactory,
   ) {
     this.#requestCacheEnabled =
       settings.systemSettings().cache?.enablePlexRequestCache ?? false;
@@ -98,7 +100,7 @@ export class MediaSourceApiFactory {
     const key = `${opts.uri}|${opts.accessToken}`;
     return cacheGetOrSet(MediaSourceApiFactory.cache, key, () => {
       return Promise.resolve(
-        new PlexApiClient({
+        this.plexApiClientFactory({
           ...opts,
           enableRequestCache: this.requestCacheEnabledForServer(opts.name),
         }),
@@ -108,7 +110,7 @@ export class MediaSourceApiFactory {
 
   async getPlexApiClientByName(name: string) {
     return this.getTypedByName(MediaSourceType.Plex, name, (mediaSource) => {
-      return new PlexApiClient({
+      return this.plexApiClientFactory({
         ...mediaSource,
         enableRequestCache: this.requestCacheEnabledForServer(mediaSource.name),
       });
